@@ -976,7 +976,13 @@ func (q *Query) getTableStruct(arrTypes ...reflect.Type) (tableStruct *TableStru
 	}
 
 	var ok bool
-	tableStruct, ok = q.tableStruct[q.table]
+	if q.tableStruct == nil && q.DB == nil {
+		q.Panic("database link may be not initialized, q.DB == nil.")
+		return
+	}
+	if q.tableStruct != nil {
+		tableStruct, ok = q.tableStruct[q.table]
+	}
 	if !ok {
 		tableStruct = NewTableStruct(q.DB, q.table, arrType)
 		q.tableStruct[q.table] = tableStruct
