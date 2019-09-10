@@ -246,6 +246,7 @@ type Query struct {
 	limitEnd   int64
 
 	updateFields []string
+	updateOps []string
 	updateArgs   []interface{} // 存储参数
 }
 
@@ -667,7 +668,7 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 		if q.DriverType == DRIVER_SQLITE {
 			limit = ""
 		}
-		colNames := arr_to_sql_add(q.updateFields, "=?", ",")
+		colNames := arr_to_sql_add_update(q.updateFields, q.updateOps)
 		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v", q.table, colNames, where, limit)
 		args = append(q.updateArgs, args...)
 	case ACTION_DELETE:
@@ -1201,16 +1202,25 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 	tableStruct := q.getTableStruct()
 
 	updateFields := make([]string, len(m))
+	updateOps := make([]string, len(m))
 	updateArgs := make([]interface{}, len(m))
 	for i, m := range m {
 		if in_array(m.Key, tableStruct.PrimaryKey) {
 			//return 0, errors.New("you can't update primary key, you can remove it first.")
 			continue
 		}
-		updateFields[i] = m.Key
+		opcode := m.Key[len(m.Key)-1:]
+		if opcode == "+" || opcode == "-" || opcode == "*" || opcode == "%" || opcode == "=" {
+			updateOps[i] = opcode
+			updateFields[i] = m.Key[0:len(m.Key)-1]
+		} else {
+			updateOps[i] = "="
+			updateFields[i] = m.Key
+		}
 		updateArgs[i] = m.Value
 	}
 	q.updateFields = updateFields
+	q.updateOps = updateOps
 	q.updateArgs = updateArgs
 
 	pkColNames := tableStruct.PrimaryKey
@@ -1280,7 +1290,11 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 					pos := poses[j]
 					var oldV reflect.Value
 					oldV = get_reflect_value_from_pos(reflect.ValueOf(old).Elem(), pos)
-					set_value_to_ifc(oldV, updateArgs[j])
+					if updateOps[j] == "=" {
+						set_value_to_ifc(oldV, updateArgs[j])
+					} else {
+						set_value_to_ifc_int(oldV, updateOps[j], updateArgs[j])
+					}
 					//oldV.Set(reflect.ValueOf(updateArgs[j]))
 				}
 			}

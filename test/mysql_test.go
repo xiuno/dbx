@@ -222,4 +222,22 @@ func TestMulti(t *testing.T) {
 	assert.Equal(t, n, int64(5))
 
 
+	// 复杂条件删除多条
+	n, err = db.Table("user").Delete()
+
+
+	n, err = db.Table("user").Count()
+	assert.Equal(t, err, nil)
+	assert.Equal(t, n, int64(0))
+
+	// 更新
+	//n, err = db.Table("user").UpdateM(dbx.M{{"gid=", 1}})
+	//assert.Equal(t, err, nil)
+	//n, err = db.Table("user").UpdateM(dbx.M{{"gid+", 1}})
+	//assert.Equal(t, err, nil)
+
+	db.Table("user").One(u1)
+	fmt.Printf("+++++u1: %v", u1)
+	assert.Equal(t, u1.Gid, int64(2))
+
 }

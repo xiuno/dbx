@@ -290,6 +290,27 @@ func arr_to_sql_add(arr []string, sep1 string, sep2 string) string {
 	return sqlAdd
 }
 
+func arr_to_sql_add_update(arr []string, opcodes []string) string {
+	sqlAdd := ""
+	opcode := ""
+	for k, v := range arr {
+		if opcodes == nil {
+			opcode = "="
+		} else {
+			opcode = opcodes[k]
+		}
+		// opcode == "" ||
+		if opcode == "=" {
+			sqlAdd += fmt.Sprintf("`%v`=?,", v)
+		} else {
+			sqlAdd += fmt.Sprintf("`%v`=`%v`%v?,", v, v, opcode)
+		}
+	}
+	sqlAdd = strings.TrimRight(sqlAdd, ",")
+	return sqlAdd
+}
+
+
 func rows_to_arr_list(destp reflect.Value, rows *sql.Rows, tableStruct *TableStruct, arrIsPtr bool) (err error) {
 	var dest reflect.Value
 	// 最终返回的数组
@@ -686,6 +707,39 @@ func set_value_to_ifc(dv reflect.Value, src interface{}) {
 	}
 
 	panic(dbxErrorNew("convert failed: %v -> %v", st, dt))
+
+}
+
+
+func set_value_to_ifc_int(v1 reflect.Value, opcode string, i2 interface{}) {
+	t1 := v1.Type()
+	if v1.Kind() == reflect.Ptr {
+		v1 = v1.Elem()
+		t1 = v1.Type()
+	}
+
+	//t2 := reflect.TypeOf(i2)
+	v2 := reflect.ValueOf(i2)
+	if v2.Kind() == reflect.Ptr {
+		v2 = v2.Elem()
+		//t2 = v2.Type()
+	}
+	v2v1 := v2.Convert(t1)
+	if opcode == "+" {
+		v3 := v1.Int() + v2v1.Int()
+		v1.Set(reflect.ValueOf(v3))
+	} else if opcode == "-" {
+		v3 := v1.Int() - v2v1.Int()
+		v1.Set(reflect.ValueOf(v3))
+	} else if opcode == "*" {
+		v3 := v1.Int() * v2v1.Int()
+		v1.Set(reflect.ValueOf(v3))
+	} else if opcode == "%" {
+		v3 := v1.Int() % v2v1.Int()
+		v1.Set(reflect.ValueOf(v3))
+	} else {
+		panic(dbxErrorNew("not support opcde: %v", opcode))
+	}
 
 }
 

@@ -177,5 +177,31 @@ func main() {
 	n, err = db.Table("user").Count()
 	fmt.Printf("count: %v\n", n)
 
+	// gid+1
+	u := &User{
+		Uid:        300,
+		Gid:        300,
+		Name:       fmt.Sprintf("name-%v", 300),
+		CreateDate: time.Now(),
+	}
+
+	db.Table("user").Replace(u)
+	db.Table("user").WherePK(300).UpdateM(dbx.M{{"gid+", 1}})
+	err = db.Table("user").WherePK(300).One(u1)
+	dbx.Check(err)
+	if u1.Gid != 301 {
+		panic("gid error.")
+	}
+
+
+	db.Table("user").Delete()
+	err = db.Table("user").One(u1)
+	dbx.Check(err)
+	if !dbx.NoRows(err) {
+		panic("delete error.")
+	}
+
+
+
 	return
 }
