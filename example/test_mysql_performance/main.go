@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/mydeeplike/dbx"
+	"github.com/xiuno/dbx"
 	"time"
 )
 

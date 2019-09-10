@@ -2,7 +2,7 @@ package test
 
 import (
 	"fmt"
-	"github.com/mydeeplike/dbx"
+	"github.com/xiuno/dbx"
 	"gotest.tools/assert"
 	"os"
 	"testing"

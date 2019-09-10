@@ -94,7 +94,7 @@ db.Table("user").LoadCache() // 自定义需要手动刷新缓存
 package main
 
 import (
-	"github.com/mydeeplike/dbx"
+	"github.com/xiuno/dbx"
 	"fmt"
 	"os"
 	"time"

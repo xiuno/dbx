@@ -103,7 +103,7 @@ db.Table("user").LoadCache() // Customization requires manual refresh of the cac
 package main
 
 import (
-	"github.com/mydeeplike/dbx"
+	"github.com/xiuno/dbx"
 	"fmt"
 	"os"
 	"time"

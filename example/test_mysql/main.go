@@ -3,7 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"github.com/mydeeplike/dbx"
+	"github.com/xiuno/dbx"
 	"os"
 	"time"
 )

@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/mydeeplike/dbx/lib/syncmap"
+	"github.com/xiuno/dbx/lib/syncmap"
 	"io"
 	"io/ioutil"
 	"os"
