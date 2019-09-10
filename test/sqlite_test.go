@@ -218,6 +218,16 @@ func TestSqliteMulti(t *testing.T) {
 	assert.Equal(t, err, nil)
 	assert.Equal(t, 5, len(userList))
 
+
+	// 更新
+	n, err = db.Table("user").UpdateM(dbx.M{{"gid=", 1}})
+	assert.Equal(t, err, nil)
+	n, err = db.Table("user").UpdateM(dbx.M{{"gid+", 1}})
+	assert.Equal(t, err, nil)
+	db.Table("user").One(u1)
+	assert.Equal(t, u1.Gid, int64(2))
+
+
 	// 复杂条件删除多条
 	n, err = db.Table("user").Where("uid>? AND gid>?", 0, 0).Sort("uid", 1).Delete()
 	assert.Equal(t, err, nil)
