@@ -1357,6 +1357,7 @@ func (q *Query) Delete() (n int64, err error) {
 
 	defer dbxErrorDefer(&err, q)
 
+	var deleteAll bool
 	// 更新缓存
 	tableStruct := q.getTableStruct()
 	if q.tableEnableCache && tableStruct.EnableCache {
@@ -1373,7 +1374,8 @@ func (q *Query) Delete() (n int64, err error) {
 
 		// 删除所有
 		if where2 == "" {
-			q.LoadCache()
+			deleteAll = true
+			//q.LoadCache()
 			// 根据主键删除
 		} else if len(q.primaryKeyStr) != 0 {
 			mp.Delete(q.primaryKeyStr)
@@ -1419,8 +1421,13 @@ func (q *Query) Delete() (n int64, err error) {
 	var args []interface{}
 	sql1, args = q.toSQL(tableStruct, ACTION_DELETE)
 
-
 	n, err = q.Exec(sql1, args...)
+
+
+
+	if deleteAll {
+		q.LoadCache()
+	}
 
 	//var result sql.Result
 	//result, err = q.Exec(sql1, args...)
