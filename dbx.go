@@ -353,7 +353,7 @@ func (db *DB) loadTableCache(tableName string) {
 	list := reflect_make_slice_pointer(tableStruct.Type)
 	err := db.Table(tableName).All(list)
 	if err != nil && err != sql.ErrNoRows {
-		panic(err)
+		db.Panic(err.Error())
 	}
 
 	listValue := reflect.ValueOf(list).Elem()
@@ -715,13 +715,15 @@ func (q *Query) One(arrIfc interface{}) (err error) {
 	arrValue := reflect.ValueOf(arrIfc)
 	if arrType.Kind() != reflect.Ptr {
 		errStr := fmt.Sprintf("must pass a struct pointer: %v", arrType.Kind())
-		panic(dbxErrorNew(errStr))
+		//panic(dbxErrorNew(errStr))
+		q.Panic(errStr)
 	}
 
 	arr := arrType.Elem() // 求一级指针，&arr -> arr
 	if arr.Kind() != reflect.Struct {
 		errStr := fmt.Sprintf("must pass a struct pointer: %v", arr.Kind())
-		panic(dbxErrorNew(errStr))
+		//panic(dbxErrorNew(errStr))
+		q.Panic(errStr)
 	}
 
 	// 如果没有 Bind() ，这里就会执行下去，从缓存里读表结构，不用每次都反射，提高效率
