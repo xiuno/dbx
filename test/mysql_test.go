@@ -21,7 +21,7 @@ type User struct {
 
 func initMySQL() {
 
-	db, err = dbx.Open("mysql", "root@tcp(localhost)/test?parseTime=true&charset=utf8")
+	db, err = dbx.Open("mysql", "root:root@tcp(localhost)/test?parseTime=true&charset=utf8")
 	if err != nil {
 		panic(err)
 	}

@@ -67,21 +67,21 @@ CREATE TABLE mycas.user (
 //}
 
 // 判断两个 pk 是否相等
-func pk_is_equa(pk1 []string, pk2 []string) bool {
-	len1, len2 := len(pk1), len(pk2)
-	if len1 != len2 {
-		return false
-	}
-	if len1 == 0 {
-		return true
-	}
-	for i := 0; i < len1; i++ {
-		if pk1[i] != pk2[i] {
-			return false
-		}
-	}
-	return true
-}
+//func pk_is_equa(pk1 []string, pk2 []string) bool {
+//	len1, len2 := len(pk1), len(pk2)
+//	if len1 != len2 {
+//		return false
+//	}
+//	if len1 == 0 {
+//		return true
+//	}
+//	for i := 0; i < len1; i++ {
+//		if pk1[i] != pk2[i] {
+//			return false
+//		}
+//	}
+//	return true
+//}
 
 /*
 	// 支持两种结构:
@@ -97,7 +97,7 @@ func pk_is_equa(pk1 []string, pk2 []string) bool {
 		primary key(id, gid)
 	)
 */
-func get_pk_from_sql(sql string) []string {
+func fetch_pk_from_sql(sql string) []string {
 	reg := regexp.MustCompile(`(?i)(?:primary\s+key|unique).*?\((.*?)\)`)
 	arr := reg.FindStringSubmatch(sql)
 	if len(arr) < 2 {
@@ -116,7 +116,7 @@ func get_pk_from_sql(sql string) []string {
 	return arr2
 }
 
-func get_auto_increment_from_sql(sql string) string {
+func fetch_auto_increment_from_sql(sql string) string {
 	reg := regexp.MustCompile(`(?i)(\w+).*(?:autoincrement|auto_increment)`)
 	arr := reg.FindStringSubmatch(sql)
 	if len(arr) == 2 {
@@ -149,8 +149,8 @@ func get_table_info(db *DB, talbeName string) (pk []string, auto_increment strin
 		} else if db.DriverType == DRIVER_SQLITE {
 			create_table_sql = sqlite_get_create_table_sql(db, talbeName)
 		}
-		pk = get_pk_from_sql(create_table_sql)
-		auto_increment = get_auto_increment_from_sql(create_table_sql)
+		pk = fetch_pk_from_sql(create_table_sql)
+		auto_increment = fetch_auto_increment_from_sql(create_table_sql)
 		return
 	}
 }
@@ -326,7 +326,7 @@ func cql_columns(arr []gocql.ColumnInfo) []string {
 }
 
 // 第2个参数约定为：struct, 不能为 &struct
-func get_pk_key(tableStruct *TableStruct, row reflect.Value) string {
+func get_pk_keys(tableStruct *TableStruct, row reflect.Value) string {
 	pkKeyName := make([]interface{}, 0)
 	pkStr := ""
 	for _, pos := range tableStruct.PrimaryKeyPos {
@@ -364,9 +364,9 @@ func get_pk_values(tableStruct *TableStruct, value reflect.Value, isCQL bool) ([
 	return pkValues
 }
 
-func arr_to_sql_add(arr []string, sep1 string, sep2 string, smallQuoteWrap bool) string {
+func arr_to_sql_add(arr []string, sep1 string, sep2 string, isCQL bool) string {
 	sqlAdd := ""
-	if smallQuoteWrap {
+	if !isCQL {
 		for _, v := range arr {
 			sqlAdd += fmt.Sprintf("`%v`%v%v", v, sep1, sep2)
 		}
@@ -379,7 +379,7 @@ func arr_to_sql_add(arr []string, sep1 string, sep2 string, smallQuoteWrap bool)
 	return sqlAdd
 }
 
-func arr_to_sql_add_update(arr []string, opcodes []string, smallQuoteWrap bool) string {
+func arr_to_sql_add_update(arr []string, opcodes []string, isCQL bool) string {
 	sqlAdd := ""
 	opcode := ""
 	for k, v := range arr {
@@ -389,7 +389,7 @@ func arr_to_sql_add_update(arr []string, opcodes []string, smallQuoteWrap bool) 
 			opcode = opcodes[k]
 		}
 		// opcode == "" ||
-		if smallQuoteWrap {
+		if !isCQL {
 			if opcode == "=" {
 				sqlAdd += fmt.Sprintf("`%v`=?,", v)
 			} else {
@@ -744,6 +744,14 @@ func set_value_to_ifc_int(v1 reflect.Value, opcode string, i2 interface{}) {
 
 }
 
+func get_key_str_by_args(args ... interface{}) string {
+	str := ""
+	for _, v := range args {
+		str += fmt.Sprintf("%v", v) + KEY_SEP
+	}
+	str = strings.TrimRight(str, KEY_SEP)
+	return str
+}
 //func uint8_to_string(bs []uint8) string {
 //	ba := []byte{}
 //	for _, b := range bs {

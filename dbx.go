@@ -439,7 +439,7 @@ func (db *DB) loadTableCache(tableName string) {
 	mp := new(syncmap.Map)
 	for i := 0; i < listValue.Len(); i++ {
 		row := listValue.Index(i)
-		pkKey := get_pk_key(tableStruct, row.Elem())
+		pkKey := get_pk_keys(tableStruct, row.Elem())
 		mp.Store(pkKey, row.Interface())
 	}
 	db.tableData[tableName] = mp
@@ -575,34 +575,8 @@ func (q *Query) WhereM(m M) *Query {
 
 func (q *Query) WherePK(args ...interface{}) *Query {
 	q.primaryArgs = args
-
-	//q.primaryArgs = args
-
-	//str := arr_to_sql_add(args, "-", "")
-
-	str := ""
-	for _, v := range args {
-		str += fmt.Sprintf("%v", v) + KEY_SEP
-	}
-	str = strings.TrimRight(str, KEY_SEP)
+	str := get_key_str_by_args(args...)
 	q.primaryKeyStr = str
-
-	/*
-		q.primaryArgs = args
-		str := ""
-		for _, v := range args {
-			str = fmt.Sprintf("%v-", v)
-		}
-		str = strings.TrimRight(str, "-")
-		q.primaryKeyStr = str
-
-		// 覆盖 where 条件！避免冲突
-		q.whereArgs = args
-
-		//todo: 性能可以继续优化，提高一倍的速度！
-		tableStruct, _ := q.getTableStruct()
-		q.where = arr_to_sql_add(tableStruct.PrimaryKey, "=?", ",")
-	*/
 	return q
 }
 
@@ -834,120 +808,9 @@ func (q *Query) One(arrIfc interface{}) (err error) {
 		}
 	}
 
-	// var stmt *sql.Stmt
-	// var rows *sql.Rows
 	sql1, args := q.toSQL(tableStruct, ACTION_SELECT_ONE)
-
-	var columns []string
-	if q.DriverType == DRIVER_CQL {
-		var rows *gocql.Iter
-		rows, err = q.CQLQuery(sql1, args...)
-		if err != nil || rows == nil {
-			return
-		}
-		defer rows.Close()
-		columns = cql_columns(rows.Columns())
-		values := make([]interface{}, len(columns))
-
-		// 数据库返回的列，需要和表结构进行对应
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
-			return err
-		}
-		posMap := map[int][]int{}
-		for k, colName := range columns {
-			n, ok := tableStruct.ColFieldMap.colMap[colName]
-			if !ok {
-				continue
-			}
-			col := tableStruct.ColFieldMap.cols[n]
-			posMap[k] = col.FieldPos
-			values[k] = reflect.New(col.FieldStruct.Type).Interface()
-		}
-
-		if b := rows.Scan(values...); !b {
-			return sql.ErrNoRows
-		}
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
-			return err
-		}
-		// 对应到相应的列
-		for k, _ := range columns {
-			pos, ok := posMap[k]
-			if !ok {
-				continue
-			}
-
-			ifc := reflect.ValueOf(values[k]).Elem().Interface()
-			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
-			set_value_to_ifc(col, ifc)
-		}
-		return nil
-
-	} else {
-		var rows *sql.Rows
-		rows, err = q.SQLQuery(sql1, args...)
-		if err != nil || rows == nil {
-			return
-		}
-		defer rows.Close()
-		columns, err = rows.Columns()
-		if err != nil {
-			return
-		}
-		// 数据库返回的列，需要和表结构进行对应
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
-			return err
-		}
-		posMap := map[int][]int{}
-		for k, colName := range columns {
-			n, ok := tableStruct.ColFieldMap.colMap[colName]
-			if !ok {
-				continue
-			}
-			col := tableStruct.ColFieldMap.cols[n]
-			posMap[k] = col.FieldPos
-		}
-
-		values := make([]interface{}, len(columns))
-		for i := range values {
-			values[i] = new(interface{})
-		}
-
-		if !rows.Next() {
-			return sql.ErrNoRows
-		}
-		err = rows.Scan(values...)
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
-			return err
-		}
-		// 对应到相应的列
-		for k, _ := range columns {
-			pos, ok := posMap[k]
-			if !ok {
-				continue
-			}
-
-			//ifc_pos_to_value(values[k], pos, arrValue)
-			ifc := *(values[k].(*interface{})) // db 里面取出来的数据
-			//valueV := reflect.ValueOf(value)
-			//valueKind := valueV.Kind()
-			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
-
-			set_value_to_ifc(col, ifc)
-
-		}
-
-		err = rows.Err()
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
-			return err
-		}
-		return nil
-	}
+	arrValue, err = q.get_row_by_sql(tableStruct, sql1, args...)
+	return
 }
 
 func (q *Query) SQLQuery(sql1 string, args ... interface{}) (rows *sql.Rows, err error) {
@@ -1020,7 +883,7 @@ func (q *Query) All(arrListIfc interface{}) (err error) {
 
 	// 判断是否为 whereM
 	sql1, args := q.toSQL(tableStruct, ACTION_SELECT_ALL)
-	if q.isCQL {
+	if !q.isCQL {
 		var rows *sql.Rows
 		rows, err = q.SQLQuery(sql1, args...)
 		if err != nil || rows == nil {
@@ -1101,6 +964,8 @@ func (q *Query) Truncate() (err error) {
 	if err != nil {
 		q.ErrorSQL(err.Error(), sql1)
 	}
+	// 清理缓存
+	q.LoadCache()
 	return
 }
 
@@ -1208,7 +1073,7 @@ func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (in
 
 	// gocql.RandomUUID()
 
-	if ignore && q.isCQL {
+	if ignore && !q.isCQL {
 		_, err = q.DB.Exec(sql1, args...)
 		q.LogSQL(sql1, args...)
 		if err != nil {
@@ -1252,13 +1117,14 @@ func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (in
 
 			//ifc2 = ifcValueP.Interface()
 		}
-		pkkey := get_pk_key(tableStruct, arrValue)
+		pkkey := get_pk_keys(tableStruct, arrValue)
 		mp.Store(pkkey, ifc2)
 	}
 
 	return
 }
 
+// 根据主键更新一条数据
 func (q *Query) Update(ifc interface{}) (affectedRows int64, err error) {
 	if q.readOnly {
 		return
@@ -1303,23 +1169,11 @@ func (q *Query) Update(ifc interface{}) (affectedRows int64, err error) {
 	if err != nil {
 		return
 	}
-	//var result sql.Result
-	//result, err = q.Exec(sql1, args...)
-	//q.LogSQL(sql1, args...)
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
-	//affectedRows, err = result.RowsAffected()
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
 
 	// cache
 	if q.tableEnableCache && tableStruct.EnableCache {
 		// 判断是否通过主键更新，如果是主键则只更新
-		pkkey := get_pk_key(tableStruct, arrValue)
+		pkkey := get_pk_keys(tableStruct, arrValue)
 		// todo: 修正为主键的值？还是报错？
 		mp, ok := q.tableData[q.table]
 		if !ok {
@@ -1340,6 +1194,53 @@ func (q *Query) Update(ifc interface{}) (affectedRows int64, err error) {
 	return
 }
 
+//// 根据主键更新最简单
+//if isPK {
+//	// 直接获取原来的值
+//	if cacheOn {
+//		// 获取一条数据，然后更新 cache
+//		mp, ok := q.tableData[q.table];
+//		if !ok {
+//			errStr := fmt.Sprintf("q.tableData[q.table]: key %v does not exists.", q.table)
+//			q.ErrorLog(errStr)
+//			err = errors.New(errStr)
+//			return
+//		}
+//		poses := make([][]int, len(updateFields))
+//		for k, colName := range updateFields {
+//			n, ok := tableStruct.ColFieldMap.colMap[colName]
+//			if !ok {
+//				q.ErrorLog("UpdateM() colNmae does not exists: " + colName)
+//				continue
+//			}
+//			col := tableStruct.ColFieldMap.cols[n]
+//			poses[k] = col.FieldPos
+//		}
+//
+//		keystr := get_key_str_by_args(q.primaryArgs...)
+//		oldRow, ok := mp.Load(keystr)
+//		if ok && oldRow != nil {
+//			for j, _ := range updateFields {
+//				pos := poses[j]
+//				var oldV reflect.Value
+//				oldV = get_reflect_value_from_pos(reflect.ValueOf(oldRow).Elem(), pos)
+//				if updateOps[j] == "=" {
+//					set_value_to_ifc(oldV, updateArgs[j])
+//				} else {
+//					set_value_to_ifc_int(oldV, updateOps[j], updateArgs[j])
+//				}
+//				//oldV.Set(reflect.ValueOf(updateArgs[j]))
+//			}
+//		}
+//		if err != nil {
+//			return
+//		}
+//	}
+//	sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
+//	_, err = q.Exec(sql1, args...)
+//	return
+//} else {
+
 func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 	if q.readOnly {
 		return
@@ -1347,9 +1248,9 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 
 	defer dbxErrorDefer(&err, q)
 
-	// 如果开启了缓存，则先查询，再更新，否则，更新完以后，就查询不到了！
 	tableStruct := q.getTableStruct()
 
+	// 更新相关的信息
 	updateFields := make([]string, len(m))
 	updateOps := make([]string, len(m))
 	updateArgs := make([]interface{}, len(m))
@@ -1371,54 +1272,32 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 	q.updateFields = updateFields
 	q.updateOps = updateOps
 	q.updateArgs = updateArgs
+	//pkColNames := tableStruct.PrimaryKey
 
-	pkColNames := tableStruct.PrimaryKey
+	// 8 种组合逻辑判断
+	//isPK := len(q.primaryKeyStr) > 0
+	cacheOn := q.tableEnableCache && tableStruct.EnableCache
+	isCQL := q.isCQL
 
-	// 更新缓存，不用判断条数，反正都是针对小表缓存
-	if q.tableEnableCache && tableStruct.EnableCache {
-		//var rows *sql.Rows
-		//var stmt *sql.Stmt
-		// 只是选择主键
-		fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.isCQL)
-		where2, args2, allowFiltering := q.whereToSQL(tableStruct)
-		sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
-
-
-		var listValue reflect.Value
-		if q.DriverType == DRIVER_CQL {
-			var rows *gocql.Iter
-			rows, err = q.CQLQuery(sql2, args2...)
-			if err != nil || rows == nil {
-				return
-				//goto UpdateFlag;
-			}
-			defer rows.Close()
-			ifc := reflect_make_slice_pointer(tableStruct.Type)
-			listValue = reflect.ValueOf(ifc)
-			err = cql_rows_to_arr_list(&listValue, rows, tableStruct, true) // 保留错误
-		} else {
-			var rows *sql.Rows
-			rows, err = q.SQLQuery(sql2, args2...)
-			if err != nil || rows == nil {
-				return
-			}
-			defer rows.Close()
-			ifc := reflect_make_slice_pointer(tableStruct.Type)
-			listValue = reflect.ValueOf(ifc)
-			err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
+	var mp *syncmap.Map
+	var listValue reflect.Value
+	poses := make([][]int, len(updateFields))
+	if cacheOn || isCQL {
+		where2, args2, _ := q.whereToSQL(tableStruct)
+		listValue, err = q.get_list_by_sql(where2, args2...)
+		if err != nil {
+			return
 		}
-
-		// 遍历 arrListType
-		//listValue := reflect.ValueOf(arrListIfc).Elem()
-		mp, ok := q.tableData[q.table];
+		listValue = listValue.Elem()
+		// fmt.Printf("listValue len: %v\n", listValue.Len())
+		var ok bool
+		mp, ok = q.tableData[q.table];
 		if !ok {
 			errStr := fmt.Sprintf("q.tableData[q.table]: key %v does not exists.", q.table)
 			q.ErrorLog(errStr)
 			err = errors.New(errStr)
 			return
 		}
-
-		poses := make([][]int, len(updateFields))
 		for k, colName := range updateFields {
 			n, ok := tableStruct.ColFieldMap.colMap[colName]
 			if !ok {
@@ -1428,12 +1307,11 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 			col := tableStruct.ColFieldMap.cols[n]
 			poses[k] = col.FieldPos
 		}
-
-		listValue = listValue.Elem()
-		// fmt.Printf("listValue len: %v\n", listValue.Len())
+	}
+	if cacheOn {
 		for i := 0; i < listValue.Len(); i++ {
 			row := listValue.Index(i) // 只有主键的数据
-			pkKey := get_pk_key(tableStruct, row.Elem())
+			pkKey := get_pk_keys(tableStruct, row.Elem())
 
 			// 遍历 M，挨个更新字段
 			old, ok := mp.Load(pkKey)
@@ -1455,31 +1333,27 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 					}
 					//oldV.Set(reflect.ValueOf(updateArgs[j]))
 				}
-
-				if q.DriverType == DRIVER_CQL {
-
-					//sql3 := fmt.Sprintf("UPDATE %v FROM %v%v", fields2, q.table, where2)
-
-					// todo: 此处为了重用，直接改变了 where 参数，不是很优雅。
-					pkValues := get_pk_values(tableStruct, row.Elem(), q.DriverType == DRIVER_CQL)
-					q.WherePK(pkValues...)
-					sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
-					affectedRows, err = q.Exec(sql1, args...)
-				}
-
 			}
 		}
 	}
-
-	// 更新
-	if q.isCQL {
-		var sql1 string
-		var args []interface{}
-		sql1, args = q.toSQL(tableStruct, ACTION_UPDATE_M)
+	if isCQL {
+		// 如果是 CQL，按照行更新 Database
+		for i := 0; i < listValue.Len(); i++ {
+			row := listValue.Index(i) // 只有主键的数据
+			pkValues := get_pk_values(tableStruct, row.Elem(), q.isCQL)
+			q.WherePK(pkValues...) // todo: 不是很优雅，如果需要再次使用可以重复调用
+			sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
+			affectedRows, err = q.Exec(sql1, args...)
+		}
+	} else {
+		// 如果不是，则批量更新 Database
+		sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
 		affectedRows, err = q.Exec(sql1, args...)
 	}
 	return
 }
+
+
 
 func (db *DB) Exec(sql1 string, args ...interface{}) (n int64, err error) {
 	if db.DriverType == DRIVER_CQL {
@@ -1515,104 +1389,233 @@ func (db *DB) Exec(sql1 string, args ...interface{}) (n int64, err error) {
 	}
 }
 
+// ispk, cacheok iscql
 func (q *Query) Delete() (n int64, err error) {
 	if q.readOnly {
 		return
 	}
-
 	defer dbxErrorDefer(&err, q)
 
-	var deleteAll bool
-
-	// 更新缓存
 	tableStruct := q.getTableStruct()
-	if q.tableEnableCache && tableStruct.EnableCache {
 
-		where2, args2, allowFiltering := q.whereToSQL(tableStruct)
+	isPK := len(q.primaryKeyStr) > 0
+	cacheOn := q.tableEnableCache && tableStruct.EnableCache
+	isCQL := q.isCQL
 
-		mp, ok := q.tableData[q.table]
-		if !ok {
-			errStr := fmt.Sprintf("q.tableData[q.table]: key %v does not exists.", q.table)
-			q.ErrorLog(errStr)
-			err = errors.New(errStr)
-			return
-		}
+	// 根据 WHERE 条件更新，三种情况：
+	/*
+		1. where 为空
+		2. where 为主键
+		3. where 为复杂条件
+	 */
+	where2, args2, allowFiltering := q.whereToSQL(tableStruct)
+	mp, ok := q.tableData[q.table]
+	if !ok {
+		errStr := fmt.Sprintf("q.tableData[q.table]: key %v does not exists.", q.table)
+		q.ErrorLog(errStr)
+		err = errors.New(errStr)
+		return
+	}
+	if where2 == "" {
+		q.Truncate()
+		return
+	}
 
-		// 删除所有
-		if where2 == "" {
-			deleteAll = true
-			//q.LoadCache()
-			// 根据主键删除
-		} else if len(q.primaryKeyStr) != 0 {
+	// 只更新一条
+	if isPK {
+		if cacheOn {
 			mp.Delete(q.primaryKeyStr)
-		} else {
-			// 根据条件查找，删除，类似 update
-
+		}
+		sql1, args := q.toSQL(tableStruct, ACTION_DELETE)
+		n, err = q.Exec(sql1, args...)
+		return
+	} else {
+		// 更新多条
+		// 需要先查询: cacheOn || isCQL
+		var listValue reflect.Value
+		if cacheOn || isCQL {
 			pkColNames := tableStruct.PrimaryKey
 			fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.isCQL)
 			sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
-
-			var listValue reflect.Value
-			if q.DriverType == DRIVER_CQL {
-				var rows *gocql.Iter
-				rows, err = q.CQLQuery(sql2, args2...)
-				if err != nil || rows == nil {
-					return
-				}
-				defer rows.Close()
-
-				ifc := reflect_make_slice_pointer(tableStruct.Type)
-				listValue = reflect.ValueOf(ifc)
-				err = cql_rows_to_arr_list(&listValue, rows, tableStruct, true) // 保留错误
-			} else {
-				var rows *sql.Rows
-				rows, err = q.SQLQuery(sql2, args2...)
-				if err != nil || rows == nil {
-					return
-				}
-				defer rows.Close()
-
-				ifc := reflect_make_slice_pointer(tableStruct.Type)
-				listValue = reflect.ValueOf(ifc)
-				err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
-			}
-
-			// 遍历 arrListType
-			//listValue := reflect.ValueOf(arrListIfc).Elem()
+			listValue, err = q.get_list_by_sql(sql2, args2...)
+		}
+		// 更新缓存
+		if cacheOn {
 			listValue = listValue.Elem()
 			for i := 0; i < listValue.Len(); i++ {
 				row := listValue.Index(i)
-				pkKey := get_pk_key(tableStruct, row.Elem())
+				pkKey := get_pk_keys(tableStruct, row.Elem())
 				mp.Delete(pkKey)
 			}
-			//q.tableData[q.table] = mp
+		}
+		// cql 需要按照条删除！
+		if isCQL {
+			listValue = listValue.Elem()
+			for i := 0; i < listValue.Len(); i++ {
+				row := listValue.Index(i)
+				pkValues := get_pk_values(tableStruct, row.Elem(), q.isCQL)
+				q.WherePK(pkValues...)
+				sql1, args := q.toSQL(tableStruct, ACTION_DELETE)
+				_, err = q.Exec(sql1, args...)
+			}
+		} else {
+			sql1, args := q.toSQL(tableStruct, ACTION_DELETE)
+			n, err = q.Exec(sql1, args...)
 		}
 	}
 
-	var sql1 string
-	var args []interface{}
-	sql1, args = q.toSQL(tableStruct, ACTION_DELETE)
+	return
+}
 
-	n, err = q.Exec(sql1, args...)
+// 获取多行
+func (q *Query) get_list_by_sql(sql2 string, args2... interface{}) (listValue reflect.Value, err error) {
+	tableStruct := q.getTableStruct()
+	if q.isCQL {
+		var rows *gocql.Iter
+		rows, err = q.CQLQuery(sql2, args2...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
 
-	if deleteAll {
-		q.LoadCache()
+		ifc := reflect_make_slice_pointer(tableStruct.Type)
+		listValue = reflect.ValueOf(ifc)
+		err = cql_rows_to_arr_list(&listValue, rows, tableStruct, true) // 保留错误
+	} else {
+		var rows *sql.Rows
+		rows, err = q.SQLQuery(sql2, args2...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+
+		ifc := reflect_make_slice_pointer(tableStruct.Type)
+		listValue = reflect.ValueOf(ifc)
+		err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
 	}
+	return
+}
 
-	//var result sql.Result
-	//result, err = q.Exec(sql1, args...)
-	//q.LogSQL(sql1, args...)
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
-	//
-	//n, err = result.RowsAffected()
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
+// 获取一行
+func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... interface{}) (arrValue reflect.Value, err error) {
+	var columns []string
+	if q.DriverType == DRIVER_CQL {
+		var rows *gocql.Iter
+		rows, err = q.CQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+		columns = cql_columns(rows.Columns())
+		values := make([]interface{}, len(columns))
 
+		// 数据库返回的列，需要和表结构进行对应
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return
+		}
+		posMap := map[int][]int{}
+		for k, colName := range columns {
+			n, ok := tableStruct.ColFieldMap.colMap[colName]
+			if !ok {
+				continue
+			}
+			col := tableStruct.ColFieldMap.cols[n]
+			posMap[k] = col.FieldPos
+			values[k] = reflect.New(col.FieldStruct.Type).Interface()
+		}
+
+		if b := rows.Scan(values...); !b {
+			err = sql.ErrNoRows
+			return
+		}
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return
+		}
+		// 对应到相应的列
+		for k, _ := range columns {
+			pos, ok := posMap[k]
+			if !ok {
+				continue
+			}
+
+			ifc := reflect.ValueOf(values[k]).Elem().Interface()
+			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
+			set_value_to_ifc(col, ifc)
+		}
+		return
+
+	} else {
+		var rows *sql.Rows
+		rows, err = q.SQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+		columns, err = rows.Columns()
+		if err != nil {
+			return
+		}
+		// 数据库返回的列，需要和表结构进行对应
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return
+		}
+		posMap := map[int][]int{}
+		for k, colName := range columns {
+			n, ok := tableStruct.ColFieldMap.colMap[colName]
+			if !ok {
+				continue
+			}
+			col := tableStruct.ColFieldMap.cols[n]
+			posMap[k] = col.FieldPos
+		}
+
+		values := make([]interface{}, len(columns))
+		for i := range values {
+			values[i] = new(interface{})
+		}
+
+		if !rows.Next() {
+			err = sql.ErrNoRows
+			return
+		}
+		err = rows.Scan(values...)
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return
+		}
+		// 对应到相应的列
+		for k, _ := range columns {
+			pos, ok := posMap[k]
+			if !ok {
+				continue
+			}
+
+			//ifc_pos_to_value(values[k], pos, arrValue)
+			ifc := *(values[k].(*interface{})) // db 里面取出来的数据
+			//valueV := reflect.ValueOf(value)
+			//valueKind := valueV.Kind()
+			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
+
+			set_value_to_ifc(col, ifc)
+
+		}
+
+		err = rows.Err()
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return
+		}
+	}
+	return
+}
+
+func (q *Query) get_row_by_pk(tableStruct *TableStruct, args... interface{}) (arrValue reflect.Value, err error) {
+	where := " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
+	sql1 := fmt.Sprintf("SELECT * FROM %v WHERE %v", q.table, where)
+	arrValue, err = q.get_row_by_sql(tableStruct, sql1, args...)
 	return
 }
 
