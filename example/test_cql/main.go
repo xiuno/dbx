@@ -219,12 +219,12 @@ func main() {
 
 	// 只能对 Counter 列进行加减！
 	// Invalid operation gid=gid+1 for non counter column
-	//db.Table("user").WherePK(300).UpdateM(dbx.M{{"gid+", 1}})
-	//err = db.Table("user").WherePK(300).One(u1)
-	//dbx.Check(err)
-	//if u1.Gid != 301 {
-	//	panic("gid error.")
-	//}
+	db.Table("user").WherePK(300).UpdateM(dbx.M{{"gid+", 1}})
+	err = db.Table("user").WherePK(300).One(u1)
+	dbx.Check(err)
+	if u1.Gid != 301 {
+		panic("gid error.")
+	}
 
 	// 必须指定主键才能删除！
 	db.Table("user").WherePK(1).Delete()

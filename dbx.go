@@ -709,8 +709,8 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 			limit = " LIMIT 1"
 		}
 
-		var updateArgs []interface{}
-		updateArgs, pkArgs, _ := struct_value_to_args(tableStruct, rvalues[0], true, true, q.isCQL)
+		var updateSets []interface{}
+		updateSets, pkArgs, _ := struct_value_to_args(tableStruct, rvalues[0], true, true, q.isCQL)
 
 		// todo: 去掉主键的更新
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, tableStruct.PrimaryKey)
@@ -720,7 +720,7 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 			args = append(args, pkArgs...)
 		}
 		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v", q.table, updateFields, where, limit)
-		args = append(updateArgs, args...)
+		args = append(updateSets, args...)
 	case ACTION_UPDATE_M:
 		if q.DriverType == DRIVER_SQLITE {
 			limit = ""
@@ -1254,6 +1254,7 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 	updateFields := make([]string, len(m))
 	updateOps := make([]string, len(m))
 	updateArgs := make([]interface{}, len(m))
+	euqalOpcode := true
 	for i, m := range m {
 		if in_array(m.Key, tableStruct.PrimaryKey) {
 			//return 0, errors.New("you can't update primary key, you can remove it first.")
@@ -1263,6 +1264,7 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 		if opcode == "+" || opcode == "-" || opcode == "*" || opcode == "%" || opcode == "=" {
 			updateOps[i] = opcode
 			updateFields[i] = m.Key[0 : len(m.Key)-1]
+			euqalOpcode = false
 		} else {
 			updateOps[i] = "="
 			updateFields[i] = m.Key
@@ -1283,8 +1285,10 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 	var listValue reflect.Value
 	poses := make([][]int, len(updateFields))
 	if cacheOn || isCQL {
-		where2, args2, _ := q.whereToSQL(tableStruct)
-		listValue, err = q.get_list_by_sql(where2, args2...)
+		where2, args2, allowFiltering := q.whereToSQL(tableStruct)
+		fields2 := arr_to_sql_add(tableStruct.PrimaryKey, "", ",", q.isCQL)
+		sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
+		listValue, err = q.get_list_by_sql(sql2, args2...)
 		if err != nil {
 			return
 		}
@@ -1309,9 +1313,12 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 		}
 	}
 	if cacheOn {
+		updateSets := arr_to_sql_add(updateFields, "=?", ",", q.isCQL)
 		for i := 0; i < listValue.Len(); i++ {
 			row := listValue.Index(i) // 只有主键的数据
-			pkKey := get_pk_keys(tableStruct, row.Elem())
+			rowElem := row.Elem()
+			pkKey := get_pk_keys(tableStruct, rowElem)
+			pkValues := get_pk_values(tableStruct, rowElem, q.isCQL)
 
 			// 遍历 M，挨个更新字段
 			old, ok := mp.Load(pkKey)
@@ -1322,28 +1329,44 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 			} else {
 				// 更新有限的字段
 				//fmt.Printf("old: %#v\n", old)
+				updateNewArgs := make([]interface{}, 0)
 				for j, _ := range updateFields {
 					pos := poses[j]
-					var oldV reflect.Value
+					var oldV reflect.Value // 更新旧值，从 map 里面反射过来
 					oldV = get_reflect_value_from_pos(reflect.ValueOf(old).Elem(), pos)
+
 					if updateOps[j] == "=" {
 						set_value_to_ifc(oldV, updateArgs[j])
 					} else {
+						// Cassandra 不支持！非 =
 						set_value_to_ifc_int(oldV, updateOps[j], updateArgs[j])
+						// 写入 CQL
+						if isCQL && !euqalOpcode {
+							updateNewArgs = append(updateNewArgs, oldV.Interface())
+						}
 					}
 					//oldV.Set(reflect.ValueOf(updateArgs[j]))
+				}
+				if isCQL && !euqalOpcode {
+					// 按照行更新
+					where := arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
+					sql3 := fmt.Sprintf("UPDATE %v SET %v WHERE %v", q.table, updateSets, where)
+					updateNewArgs = append(updateNewArgs, pkValues...)
+					affectedRows, err = q.Exec(sql3, updateNewArgs...)
 				}
 			}
 		}
 	}
 	if isCQL {
 		// 如果是 CQL，按照行更新 Database
-		for i := 0; i < listValue.Len(); i++ {
-			row := listValue.Index(i) // 只有主键的数据
-			pkValues := get_pk_values(tableStruct, row.Elem(), q.isCQL)
-			q.WherePK(pkValues...) // todo: 不是很优雅，如果需要再次使用可以重复调用
-			sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
-			affectedRows, err = q.Exec(sql1, args...)
+		if euqalOpcode {
+			for i := 0; i < listValue.Len(); i++ {
+				row := listValue.Index(i) // 只有主键的数据
+				pkValues := get_pk_values(tableStruct, row.Elem(), q.isCQL)
+				q.WherePK(pkValues...) // todo: 不是很优雅，如果需要再次使用可以重复调用
+				sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
+				affectedRows, err = q.Exec(sql1, args...)
+			}
 		}
 	} else {
 		// 如果不是，则批量更新 Database
