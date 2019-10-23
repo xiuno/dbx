@@ -189,9 +189,9 @@ func main() {
 
 	// 自定义复杂 SQL 获取多条（原生）
 	var name string
-	rows := db.CQLSession.Query("SELECT `uid`, `name` FROM `user` WHERE 1 ORDER BY uid DESC").Iter()
+	rows := db.CQLSession.Query("SELECT uid,name FROM user").Iter()
 	dbx.Check(err)
-	rows.Close()
+	defer rows.Close()
 	for rows.Scan(&uid, &name) {
 		fmt.Printf("uid: %v, name: %v\n", uid, name)
 	}
