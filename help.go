@@ -56,7 +56,7 @@ CREATE TABLE mycas.user (
     AND min_index_interval = 128
     AND read_repair_chance = 0.0
     AND speculative_retry = '99.0PERCENTILE';
- */
+*/
 //func cql_get_create_table_sql(db *DB, tableName string) string {
 //	meta := db.CQLMeta
 //	meta.Tables[tableName].PartitionKey[0].Name
@@ -137,7 +137,7 @@ func get_table_info(db *DB, talbeName string) (pk []string, auto_increment strin
 		}
 		for _, v := range meta.Tables[talbeName].PartitionKey {
 			//if v.Type.Type() == gocql.TypeUUID {
-				//auto_increment = v.Name
+			//auto_increment = v.Name
 			//}
 			pk = append(pk, v.Name)
 		}
@@ -339,6 +339,31 @@ func get_pk_key(tableStruct *TableStruct, row reflect.Value) string {
 	return pkKey
 }
 
+// 第2个参数约定为：struct, 不能为 &struct
+//func get_pk_values(tableStruct *TableStruct, row reflect.Value) []interface{} {
+func get_pk_values(tableStruct *TableStruct, value reflect.Value, isCQL bool) ([]interface{}) {
+	pkValues := make([]interface{}, 0)
+	for _, colName := range tableStruct.ColFieldMap.colArr {
+		if !in_array(colName, tableStruct.PrimaryKey) {
+			continue
+		}
+		n := tableStruct.ColFieldMap.colMap[colName]
+		pos := tableStruct.ColFieldMap.cols[n].FieldPos
+		v := get_reflect_value_from_pos(value, pos)
+		vi := v.Interface()
+		vtime, ok := vi.(time.Time)
+		var tmp interface{}
+		if ok && !isCQL {
+			tmp = vtime.Format("2006-01-02 15:04:05")
+		} else {
+			tmp = vi
+		}
+
+		pkValues = append(pkValues, tmp)
+	}
+	return pkValues
+}
+
 func arr_to_sql_add(arr []string, sep1 string, sep2 string, smallQuoteWrap bool) string {
 	sqlAdd := ""
 	if smallQuoteWrap {
@@ -529,7 +554,6 @@ func cql_rows_to_arr_list(destp *reflect.Value, rows *gocql.Iter, tableStruct *T
 			//col := get_reflect_value_from_pos(value2, fromPos)
 			//set_value_to_ifc(col, value)
 
-
 		}
 		if arrIsPtr {
 			dest = reflect.Append(dest, row) // reflect.Indirect
@@ -554,7 +578,7 @@ func cql_rows_to_arr_list(destp *reflect.Value, rows *gocql.Iter, tableStruct *T
 }
 
 // uncludePK 是否排除主键
-func struct_value_to_args(db *DB, tableStruct *TableStruct, value reflect.Value, uncludeAutoIncrement bool, uncludePK bool) ([]interface{}, []interface{}, interface{}) {
+func struct_value_to_args(tableStruct *TableStruct, value reflect.Value, uncludeAutoIncrement bool, uncludePK bool, isCQL bool) ([]interface{}, []interface{}, interface{}) {
 	args := make([]interface{}, 0)
 	pkArgs := make([]interface{}, 0)
 	var autoIncrementArg interface{}
@@ -569,7 +593,7 @@ func struct_value_to_args(db *DB, tableStruct *TableStruct, value reflect.Value,
 		vi := v.Interface()
 		vtime, ok := vi.(time.Time)
 		var tmp interface{}
-		if ok && db.DriverType != DRIVER_CQL {
+		if ok && !isCQL {
 			tmp = vtime.Format("2006-01-02 15:04:05")
 		} else {
 			tmp = vi
@@ -589,8 +613,8 @@ func struct_value_to_args(db *DB, tableStruct *TableStruct, value reflect.Value,
 }
 
 func ifc_pos_to_value(fromIfc interface{}, fromPos []int, retValue reflect.Value) error {
-	value := reflect.ValueOf(fromIfc).Elem().Interface()
-	//value := *(fromIfc.(*interface{})) // db 里面取出来的数据
+	value := reflect.ValueOf(fromIfc).Elem().Interface() // 兼容性良好一些
+	//value := *(fromIfc.(*interface{})) // db 里面取出来的数据，废弃的写法
 
 	//valueV := reflect.ValueOf(value)
 	//valueKind := valueV.Kind()
@@ -687,7 +711,6 @@ func set_value_to_ifc(dv reflect.Value, src interface{}) {
 	panic(dbxErrorNew("convert failed: %v -> %v", st, dt))
 
 }
-
 
 func set_value_to_ifc_int(v1 reflect.Value, opcode string, i2 interface{}) {
 	t1 := v1.Type()

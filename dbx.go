@@ -222,6 +222,7 @@ func NewTableStruct(db *DB, tableName string, pointerType reflect.Type) (*TableS
 
 type DB struct {
 	*sql.DB
+
 	CQLSession *gocql.Session
 	CQLMeta    *gocql.KeyspaceMetadata
 	DriverType int
@@ -235,6 +236,7 @@ type DB struct {
 	tableEnableCache bool
 
 	readOnly bool // 只读模式，禁止写，防止出错。
+	isCQL bool
 }
 
 type Query struct {
@@ -313,6 +315,7 @@ func Open(driverName string, dataSourceNames ... string) (*DB, error) {
 			tableStruct:      make(map[string]*TableStruct),
 			tableData:        make(map[string]*syncmap.Map), // 第一级的 map 会在启动的时候初始化好，第二级的使用安全 map
 			tableEnableCache: false,
+			isCQL: false,
 		}, err
 	} else {
 		// 支持多个 dataSourceName
@@ -342,6 +345,7 @@ func Open(driverName string, dataSourceNames ... string) (*DB, error) {
 			tableStruct:      make(map[string]*TableStruct),
 			tableData:        make(map[string]*syncmap.Map), // 第一级的 map 会在启动的时候初始化好，第二级的使用安全 map
 			tableEnableCache: false,
+			isCQL: true,
 		}, err
 	}
 }
@@ -616,7 +620,7 @@ func (q *Query) whereToSQL(tableStruct *TableStruct) (where string, args []inter
 
 	// 主键优先级最高，独占
 	if len(q.primaryArgs) > 0 {
-		where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.DriverType != DRIVER_CQL)
+		where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
 		args = q.primaryArgs
 		return
 	}
@@ -638,7 +642,7 @@ func (q *Query) whereToSQLDo() (where string, args []interface{}) {
 	args = q.whereArgs
 	if len(q.whereM) > 0 {
 		colNames, args2 := q.whereM.toKeysValues()
-		whereAdd := arr_to_sql_add(colNames, "=?", " AND ", q.DriverType != DRIVER_CQL)
+		whereAdd := arr_to_sql_add(colNames, "=?", " AND ", q.isCQL)
 		if where == "" {
 			where = whereAdd
 		} else {
@@ -732,23 +736,23 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 		}
 
 		var updateArgs []interface{}
-		updateArgs, pkArgs, _ := struct_value_to_args(q.DB, tableStruct, rvalues[0], true, true)
+		updateArgs, pkArgs, _ := struct_value_to_args(tableStruct, rvalues[0], true, true, q.isCQL)
 
 		// todo: 去掉主键的更新
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, tableStruct.PrimaryKey)
-		updateFields := arr_to_sql_add(colNames, "=?", ",", q.DriverType != DRIVER_CQL)
+		updateFields := arr_to_sql_add(colNames, "=?", ",", q.isCQL)
 		if where == "" {
-			where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.DriverType != DRIVER_CQL)
+			where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
 			args = append(args, pkArgs...)
 		}
-		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v%v", q.table, updateFields, where, limit, allowFiltering)
+		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v", q.table, updateFields, where, limit)
 		args = append(updateArgs, args...)
 	case ACTION_UPDATE_M:
 		if q.DriverType == DRIVER_SQLITE {
 			limit = ""
 		}
-		colNames := arr_to_sql_add_update(q.updateFields, q.updateOps, q.DriverType != DRIVER_CQL)
-		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v%v", q.table, colNames, where, limit, allowFiltering)
+		colNames := arr_to_sql_add_update(q.updateFields, q.updateOps, q.isCQL)
+		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v", q.table, colNames, where, limit) // UPDATE 不支持 ALLOW FILTERING
 		args = append(q.updateArgs, args...)
 	case ACTION_DELETE:
 		if q.DriverType == DRIVER_SQLITE {
@@ -758,29 +762,29 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 	case ACTION_INSERT:
 		uncludes := []string{tableStruct.AutoIncrement}
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, uncludes)
-		fields := arr_to_sql_add(colNames, "", ",", q.DriverType != DRIVER_CQL)
+		fields := arr_to_sql_add(colNames, "", ",", q.isCQL)
 		values := strings.TrimRight(strings.Repeat("?,", len(colNames)), ",")
 		sql1 = fmt.Sprintf("INSERT INTO %v (%v) VALUES (%v)", q.table, fields, values)
-		args, _, _ = struct_value_to_args(q.DB, tableStruct, rvalues[0], true, false)
+		args, _, _ = struct_value_to_args(tableStruct, rvalues[0], true, false, q.isCQL)
 	case ACTION_INSERT_IGNORE:
 		// copy from ACTION_INSERT
 		uncludes := []string{tableStruct.AutoIncrement}
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, uncludes)
-		fields := arr_to_sql_add(colNames, "", ",", q.DriverType != DRIVER_CQL)
+		fields := arr_to_sql_add(colNames, "", ",", q.isCQL)
 		values := strings.TrimRight(strings.Repeat("?,", len(colNames)), ",")
 		if q.DriverType == DRIVER_MYSQL {
 			sql1 = fmt.Sprintf("INSERT IGNORE INTO %v (%v) VALUES (%v)", q.table, fields, values)
 		} else if q.DriverType == DRIVER_SQLITE {
 			sql1 = fmt.Sprintf("INSERT OR IGNORE INTO %v (%v) VALUES (%v)", q.table, fields, values)
 		}
-		args, _, _ = struct_value_to_args(q.DB, tableStruct, rvalues[0], true, false)
+		args, _, _ = struct_value_to_args(tableStruct, rvalues[0], true, false, q.isCQL)
 		// copy end
 	case ACTION_REPLACE:
 		tableStruct := q.tableStruct[q.table]
-		fields := arr_to_sql_add(tableStruct.ColFieldMap.colArr, "", ",", q.DriverType != DRIVER_CQL)
+		fields := arr_to_sql_add(tableStruct.ColFieldMap.colArr, "", ",", q.isCQL)
 		values := strings.TrimRight(strings.Repeat("?,", len(tableStruct.ColFieldMap.colArr)), ",")
 		sql1 = fmt.Sprintf("REPLACE INTO %v (%v) VALUES (%v)", q.table, fields, values)
-		args, _, _ = struct_value_to_args(q.DB, tableStruct, rvalues[0], false, false)
+		args, _, _ = struct_value_to_args(tableStruct, rvalues[0], false, false, q.isCQL)
 	case ACTION_COUNT:
 		sql1 = fmt.Sprintf("SELECT COUNT(*) FROM %v%v%v", fields, q.table, where, allowFiltering)
 	case ACTION_SUM:
@@ -1016,7 +1020,7 @@ func (q *Query) All(arrListIfc interface{}) (err error) {
 
 	// 判断是否为 whereM
 	sql1, args := q.toSQL(tableStruct, ACTION_SELECT_ALL)
-	if q.DriverType != DRIVER_CQL {
+	if q.isCQL {
 		var rows *sql.Rows
 		rows, err = q.SQLQuery(sql1, args...)
 		if err != nil || rows == nil {
@@ -1141,7 +1145,7 @@ func (q *Query) Insert(ifc interface{}) (insertId int64, err error) {
 func (q *Query) Replace(ifc interface{}) (insertId int64, err error) {
 	if q.DriverType == DRIVER_CQL {
 		tableStruct := q.getTableStruct()
-		_, pkArgs, _ := struct_value_to_args(q.DB, tableStruct, reflect.ValueOf(ifc), false, false)
+		_, pkArgs, _ := struct_value_to_args(tableStruct, reflect.ValueOf(ifc), false, false, q.isCQL)
 		_, err = q.WherePK(pkArgs...).Delete()
 		if err != nil {
 			return
@@ -1204,7 +1208,7 @@ func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (in
 
 	// gocql.RandomUUID()
 
-	if ignore && q.DriverType != DRIVER_CQL {
+	if ignore && q.isCQL {
 		_, err = q.DB.Exec(sql1, args...)
 		q.LogSQL(sql1, args...)
 		if err != nil {
@@ -1375,9 +1379,10 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 		//var rows *sql.Rows
 		//var stmt *sql.Stmt
 		// 只是选择主键
-		fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.DriverType != DRIVER_CQL)
+		fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.isCQL)
 		where2, args2, allowFiltering := q.whereToSQL(tableStruct)
 		sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
+
 
 		var listValue reflect.Value
 		if q.DriverType == DRIVER_CQL {
@@ -1450,16 +1455,29 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 					}
 					//oldV.Set(reflect.ValueOf(updateArgs[j]))
 				}
+
+				if q.DriverType == DRIVER_CQL {
+
+					//sql3 := fmt.Sprintf("UPDATE %v FROM %v%v", fields2, q.table, where2)
+
+					// todo: 此处为了重用，直接改变了 where 参数，不是很优雅。
+					pkValues := get_pk_values(tableStruct, row.Elem(), q.DriverType == DRIVER_CQL)
+					q.WherePK(pkValues...)
+					sql1, args := q.toSQL(tableStruct, ACTION_UPDATE_M)
+					affectedRows, err = q.Exec(sql1, args...)
+				}
+
 			}
 		}
 	}
 
 	// 更新
-	var sql1 string
-	var args []interface{}
-	sql1, args = q.toSQL(tableStruct, ACTION_UPDATE_M)
-
-	affectedRows, err = q.Exec(sql1, args...)
+	if q.isCQL {
+		var sql1 string
+		var args []interface{}
+		sql1, args = q.toSQL(tableStruct, ACTION_UPDATE_M)
+		affectedRows, err = q.Exec(sql1, args...)
+	}
 	return
 }
 
@@ -1531,7 +1549,7 @@ func (q *Query) Delete() (n int64, err error) {
 			// 根据条件查找，删除，类似 update
 
 			pkColNames := tableStruct.PrimaryKey
-			fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.DriverType != DRIVER_CQL)
+			fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.isCQL)
 			sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
 
 			var listValue reflect.Value
