@@ -1438,10 +1438,10 @@ func (q *Query) Delete() (n int64, err error) {
 			fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.isCQL)
 			sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
 			listValue, err = q.get_list_by_sql(sql2, args2...)
+			listValue = listValue.Elem()
 		}
 		// 更新缓存
 		if cacheOn {
-			listValue = listValue.Elem()
 			for i := 0; i < listValue.Len(); i++ {
 				row := listValue.Index(i)
 				pkKey := get_pk_keys(tableStruct, row.Elem())
@@ -1450,7 +1450,6 @@ func (q *Query) Delete() (n int64, err error) {
 		}
 		// cql 需要按照条删除！
 		if isCQL {
-			listValue = listValue.Elem()
 			for i := 0; i < listValue.Len(); i++ {
 				row := listValue.Index(i)
 				pkValues := get_pk_values(tableStruct, row.Elem(), q.isCQL)
