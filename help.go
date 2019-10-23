@@ -3,12 +3,15 @@ package dbx
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unsafe"
+
+	"github.com/gocql/gocql"
 )
 
 func sqlite_get_create_table_sql(db *DB, tableName string) (string) {
@@ -33,6 +36,35 @@ func mysql_get_create_table_sql(db *DB, tableName string) (string) {
 	}
 	return createTable
 }
+
+/*
+desc mycas.user
+CREATE TABLE mycas.user (
+    id int PRIMARY KEY,
+    user_name text
+) WITH bloom_filter_fp_chance = 0.01
+    AND caching = {'keys': 'ALL', 'rows_per_partition': 'ALL'}
+    AND comment = ''
+    AND compaction = {'class': 'SizeTieredCompactionStrategy'}
+    AND compression = {'sstable_compression': 'org.apache.cassandra.io.compress.LZ4Compressor'}
+    AND crc_check_chance = 1.0
+    AND dclocal_read_repair_chance = 0.1
+    AND default_time_to_live = 0
+    AND gc_grace_seconds = 864000
+    AND max_index_interval = 2048
+    AND memtable_flush_period_in_ms = 0
+    AND min_index_interval = 128
+    AND read_repair_chance = 0.0
+    AND speculative_retry = '99.0PERCENTILE';
+ */
+//func cql_get_create_table_sql(db *DB, tableName string) string {
+//	meta := db.CQLMeta
+//	meta.Tables[tableName].PartitionKey[0].Name
+//	q := db.CQLSession.Query(fmt.Sprintf("desc %v.%v", db.DbName, tableName))
+//	str := ""
+//	q.Scan(&str)
+//	return str
+//}
 
 // 判断两个 pk 是否相等
 func pk_is_equa(pk1 []string, pk2 []string) bool {
@@ -95,15 +127,32 @@ func get_auto_increment_from_sql(sql string) string {
 }
 
 func get_table_info(db *DB, talbeName string) (pk []string, auto_increment string) {
-	create_table_sql := ""
-	if db.DriverType == DRIVER_MYSQL {
-		create_table_sql = mysql_get_create_table_sql(db, talbeName)
-	} else if db.DriverType == DRIVER_SQLITE {
-		create_table_sql = sqlite_get_create_table_sql(db, talbeName)
+	pk = make([]string, 0)
+	if db.DriverType == DRIVER_CQL {
+		meta := db.CQLMeta
+		if _, ok := meta.Tables[talbeName]; !ok {
+			// 获取
+			log.Printf("talbeName does not exists! %v", talbeName)
+			return
+		}
+		for _, v := range meta.Tables[talbeName].PartitionKey {
+			//if v.Type.Type() == gocql.TypeUUID {
+				//auto_increment = v.Name
+			//}
+			pk = append(pk, v.Name)
+		}
+		return
+	} else {
+		create_table_sql := ""
+		if db.DriverType == DRIVER_MYSQL {
+			create_table_sql = mysql_get_create_table_sql(db, talbeName)
+		} else if db.DriverType == DRIVER_SQLITE {
+			create_table_sql = sqlite_get_create_table_sql(db, talbeName)
+		}
+		pk = get_pk_from_sql(create_table_sql)
+		auto_increment = get_auto_increment_from_sql(create_table_sql)
+		return
 	}
-	pk = get_pk_from_sql(create_table_sql)
-	auto_increment = get_auto_increment_from_sql(create_table_sql)
-	return
 }
 
 // t 兼容 struct / &struct
@@ -158,70 +207,70 @@ func struct_fields_range_do(colFieldMap *ColFieldMap, t2 reflect.Type, pos1 []in
 //	return p2
 //}
 
-func struct_field_value_get(p reflect.Value, pos []int) reflect.Value {
-	p2 := p
-	for _, i := range pos {
-		p2 = p2.Field(i)
-	}
-	return p2
-}
+//func struct_field_value_get(p reflect.Value, pos []int) reflect.Value {
+//	p2 := p
+//	for _, i := range pos {
+//		p2 = p2.Field(i)
+//	}
+//	return p2
+//}
 
 // 只返回 keys 里面不为空的
-func struct_values(keys []string, ifc interface{}) ([]interface{}) {
-	var struct_values_do func(v reflect.Value) ([]interface{})
-	i := 0
-	keysLen := len(keys)
-	struct_values_do = func(v reflect.Value) ([]interface{}) {
-		if v.Kind() == reflect.Ptr {
-			v = v.Elem()
-		}
-		if v.Kind() != reflect.Struct {
-			panic(dbxErrorNew("type of first argument must be sturct."))
-		}
-		values := []interface{}{}
-		n := v.NumField()
-		for j := 0; j < n; j++ {
-			if i >= keysLen {
-				break
-			}
-			key := keys[i]
-			if key == "" {
-				i++
-				continue
-			}
-			field := v.Field(j)
-			if field.CanInterface() { //判断是否为可导出字段
-				//判断是否是嵌套结构
-				fieldType := field.Type()
-				if fieldType.Kind() == reflect.Ptr && fieldType.Elem().Kind() == reflect.Struct {
-					field = field.Elem()
-				}
-				if fieldType.Kind() == reflect.Struct {
-					values2 := struct_values_do(field)
-					values = append(values, values2...)
-					continue
-				} else {
-					values = append(values, field.Interface())
-				}
-			}
-			i++
-		}
-		return values
-	}
-	v := reflect.ValueOf(ifc)
-	return struct_values_do(v)
-}
+//func struct_values(keys []string, ifc interface{}) ([]interface{}) {
+//	var struct_values_do func(v reflect.Value) ([]interface{})
+//	i := 0
+//	keysLen := len(keys)
+//	struct_values_do = func(v reflect.Value) ([]interface{}) {
+//		if v.Kind() == reflect.Ptr {
+//			v = v.Elem()
+//		}
+//		if v.Kind() != reflect.Struct {
+//			panic(dbxErrorNew("type of first argument must be sturct."))
+//		}
+//		values := []interface{}{}
+//		n := v.NumField()
+//		for j := 0; j < n; j++ {
+//			if i >= keysLen {
+//				break
+//			}
+//			key := keys[i]
+//			if key == "" {
+//				i++
+//				continue
+//			}
+//			field := v.Field(j)
+//			if field.CanInterface() { //判断是否为可导出字段
+//				//判断是否是嵌套结构
+//				fieldType := field.Type()
+//				if fieldType.Kind() == reflect.Ptr && fieldType.Elem().Kind() == reflect.Struct {
+//					field = field.Elem()
+//				}
+//				if fieldType.Kind() == reflect.Struct {
+//					values2 := struct_values_do(field)
+//					values = append(values, values2...)
+//					continue
+//				} else {
+//					values = append(values, field.Interface())
+//				}
+//			}
+//			i++
+//		}
+//		return values
+//	}
+//	v := reflect.ValueOf(ifc)
+//	return struct_values_do(v)
+//}
 
-func array_unique(arr []string) []string {
-	r := []string{}
-	for _, v := range arr {
-		if v == "" {
-			continue
-		}
-		r = append(r, v)
-	}
-	return r
-}
+//func array_unique(arr []string) []string {
+//	r := []string{}
+//	for _, v := range arr {
+//		if v == "" {
+//			continue
+//		}
+//		r = append(r, v)
+//	}
+//	return r
+//}
 
 func reflect_make_slice_pointer(ifc interface{}) interface{} {
 	ifcType, ok := ifc.(reflect.Type)
@@ -267,6 +316,15 @@ func get_reflect_value_from_pos(col reflect.Value, pos []int) (reflect.Value) {
 	return field
 }
 
+func cql_columns(arr []gocql.ColumnInfo) []string {
+	ret := make([]string, 0)
+	for _, v := range arr {
+		//fmt.Printf("v.Name: %v, ", v.Name)
+		ret = append(ret, v.Name)
+	}
+	return ret
+}
+
 // 第2个参数约定为：struct, 不能为 &struct
 func get_pk_key(tableStruct *TableStruct, row reflect.Value) string {
 	pkKeyName := make([]interface{}, 0)
@@ -281,16 +339,22 @@ func get_pk_key(tableStruct *TableStruct, row reflect.Value) string {
 	return pkKey
 }
 
-func arr_to_sql_add(arr []string, sep1 string, sep2 string) string {
+func arr_to_sql_add(arr []string, sep1 string, sep2 string, smallQuoteWrap bool) string {
 	sqlAdd := ""
-	for _, v := range arr {
-		sqlAdd += fmt.Sprintf("`%v`%v%v", v, sep1, sep2)
+	if smallQuoteWrap {
+		for _, v := range arr {
+			sqlAdd += fmt.Sprintf("`%v`%v%v", v, sep1, sep2)
+		}
+	} else {
+		for _, v := range arr {
+			sqlAdd += fmt.Sprintf("%v%v%v", v, sep1, sep2)
+		}
 	}
 	sqlAdd = strings.TrimRight(sqlAdd, sep2)
 	return sqlAdd
 }
 
-func arr_to_sql_add_update(arr []string, opcodes []string) string {
+func arr_to_sql_add_update(arr []string, opcodes []string, smallQuoteWrap bool) string {
 	sqlAdd := ""
 	opcode := ""
 	for k, v := range arr {
@@ -300,16 +364,30 @@ func arr_to_sql_add_update(arr []string, opcodes []string) string {
 			opcode = opcodes[k]
 		}
 		// opcode == "" ||
-		if opcode == "=" {
-			sqlAdd += fmt.Sprintf("`%v`=?,", v)
+		if smallQuoteWrap {
+			if opcode == "=" {
+				sqlAdd += fmt.Sprintf("`%v`=?,", v)
+			} else {
+				sqlAdd += fmt.Sprintf("`%v`=`%v`%v?,", v, v, opcode)
+			}
 		} else {
-			sqlAdd += fmt.Sprintf("`%v`=`%v`%v?,", v, v, opcode)
+			if opcode == "=" {
+				sqlAdd += fmt.Sprintf("%v=?,", v)
+			} else {
+				sqlAdd += fmt.Sprintf("%v=%v%v?,", v, v, opcode)
+			}
 		}
 	}
 	sqlAdd = strings.TrimRight(sqlAdd, ",")
 	return sqlAdd
 }
 
+// 差异太大，直接拷贝省事
+//type RowsIfc interface {
+//	Columns() ([]string, error)
+//	Scan(dest ...interface{}) error
+//	Next() bool
+//}
 
 func rows_to_arr_list(destp reflect.Value, rows *sql.Rows, tableStruct *TableStruct, arrIsPtr bool) (err error) {
 	var dest reflect.Value
@@ -363,38 +441,6 @@ func rows_to_arr_list(destp reflect.Value, rows *sql.Rows, tableStruct *TableStr
 
 			ifc_pos_to_value(values[k], pos, row)
 
-			/*
-				value := *(values[k].(*interface{}))
-				//value := values[k] // 返回的结果是一个 (*interface{}) 类型
-
-				row2 := get_reflect_value_from_pos(rowElem, pos)
-				switch value.(type) {
-				case []uint8: {
-					str := uint8_to_string(value.([]uint8))
-					row2.Set(reflect.ValueOf(str))
-				}
-				default:
-					row2.Set(reflect.ValueOf(value))
-				}
-			*/
-
-			// 判断类型是否为 []uint8
-			//valueValue := reflect.ValueOf(value)
-			//valueType := valueValue.Type()
-			//
-			//// 判断目标是否为 *interface
-			////switch expr {
-			////	case *interface{}:
-			////}
-			//// https://github.com/go-sql-driver/mysql/issues/407
-			//// mysql has two protocols
-			//if valueType.Kind() == reflect.Slice && valueType.Elem().Kind() == reflect.Uint8 {
-			//	str := uint8_to_string(value.([]uint8))
-			//	row2.Set(reflect.ValueOf(str))
-			//} else {
-			//	row2.Set(valueValue)
-			//}
-
 		}
 		if arrIsPtr {
 			dest = reflect.Append(dest, row) // reflect.Indirect
@@ -432,45 +478,120 @@ func rows_to_arr_list(destp reflect.Value, rows *sql.Rows, tableStruct *TableStr
 	return
 }
 
+// copy from rows_to_arr_list()
+func cql_rows_to_arr_list(destp *reflect.Value, rows *gocql.Iter, tableStruct *TableStruct, arrIsPtr bool) (err error) {
+	var dest reflect.Value
+	// 最终返回的数组
+	// 因为我们约定了 TableStruct.Type 为 &struct 类型，所以这里很方便
+	//var dest reflect.Value
+	if arrIsPtr {
+		dest = reflect.MakeSlice(reflect.SliceOf(tableStruct.Type), 0, 0)
+	} else {
+		dest = reflect.MakeSlice(reflect.SliceOf(tableStruct.Type.Elem()), 0, 0)
+	}
+	if rows == nil {
+		return
+	}
+
+	// 数据库返回的列，需要和表结构进行对应
+	columns := cql_columns(rows.Columns())
+	values := make([]interface{}, len(columns))
+
+	posMap := map[int][]int{}
+	for k, colName := range columns {
+		n, ok := tableStruct.ColFieldMap.colMap[colName]
+		if !ok {
+			//posMap[k] = nil // 标志不存在！
+			continue
+		}
+		col := tableStruct.ColFieldMap.cols[n]
+		posMap[k] = col.FieldPos
+		values[k] = reflect.New(col.FieldStruct.Type).Interface()
+	}
+
+	totalRows := 0
+	for rows.Scan(values...) {
+
+		//fmt.Printf("values: %v\n", values)
+		// 对应到相应的列
+		row := reflect.New(tableStruct.Type.Elem())
+		rowElem := row.Elem()
+		for k, _ := range columns {
+			pos, ok := posMap[k]
+			// 如果不存在，则跳过
+			if !ok {
+				continue
+			}
+
+			ifc_pos_to_value(values[k], pos, row)
+
+			//value2 := reflect.ValueOf(values[k]).Elem()
+			//col := get_reflect_value_from_pos(value2, fromPos)
+			//set_value_to_ifc(col, value)
+
+
+		}
+		if arrIsPtr {
+			dest = reflect.Append(dest, row) // reflect.Indirect
+		} else {
+			dest = reflect.Append(dest, rowElem)
+		}
+		totalRows++
+	}
+	if totalRows == 0 {
+		return sql.ErrNoRows
+	}
+
+	// 赋值: destp = dest
+	// todo: 约定都为指针 &arrList， 需要 destp.Elem()
+	if (*destp).Kind() == reflect.Ptr {
+		(*destp).Elem().Set(dest)
+	} else {
+		(*destp).Set(dest)
+	}
+
+	return
+}
+
 // uncludePK 是否排除主键
-func struct_value_to_args(tableStruct *TableStruct, value reflect.Value, uncludeAutoIncrement bool, uncludePK bool) ([]interface{}, []interface{}, interface{}) {
+func struct_value_to_args(db *DB, tableStruct *TableStruct, value reflect.Value, uncludeAutoIncrement bool, uncludePK bool) ([]interface{}, []interface{}, interface{}) {
 	args := make([]interface{}, 0)
 	pkArgs := make([]interface{}, 0)
 	var autoIncrementArg interface{}
 	for _, colName := range tableStruct.ColFieldMap.colArr {
-		flag1 := 0
-		if uncludeAutoIncrement && colName == tableStruct.AutoIncrement {
-			flag1 = 1
-		}
-		if uncludePK {
-			if in_array(colName, tableStruct.PrimaryKey) {
-				flag1 = 2
-			}
-		}
+
+		flagIncrement := (colName == tableStruct.AutoIncrement)
+		flagPK := (in_array(colName, tableStruct.PrimaryKey))
+
 		n := tableStruct.ColFieldMap.colMap[colName]
 		pos := tableStruct.ColFieldMap.cols[n].FieldPos
 		v := get_reflect_value_from_pos(value, pos)
 		vi := v.Interface()
 		vtime, ok := vi.(time.Time)
 		var tmp interface{}
-		if ok {
+		if ok && db.DriverType != DRIVER_CQL {
 			tmp = vtime.Format("2006-01-02 15:04:05")
 		} else {
 			tmp = vi
 		}
-		if flag1 == 0 {
-			args = append(args, tmp)
-		} else if flag1 == 1 {
+		if flagIncrement {
 			autoIncrementArg = tmp
-		} else if flag1 == 2 {
+		}
+		if flagPK {
 			pkArgs = append(pkArgs, tmp)
 		}
+		if uncludeAutoIncrement && flagIncrement || uncludePK && flagPK {
+			continue
+		}
+		args = append(args, tmp)
 	}
 	return args, pkArgs, autoIncrementArg
 }
 
 func ifc_pos_to_value(fromIfc interface{}, fromPos []int, retValue reflect.Value) error {
-	value := *(fromIfc.(*interface{})) // db 里面取出来的数据
+	value := reflect.ValueOf(fromIfc).Elem().Interface()
+	//value := *(fromIfc.(*interface{})) // db 里面取出来的数据
+
 	//valueV := reflect.ValueOf(value)
 	//valueKind := valueV.Kind()
 
@@ -478,47 +599,6 @@ func ifc_pos_to_value(fromIfc interface{}, fromPos []int, retValue reflect.Value
 
 	set_value_to_ifc(col, value)
 
-	//
-	//colKind := col.Kind()
-	//
-	//// 判断类型是否为 []uint8
-	//if valueKind == colKind {
-	//	col.Set(valueV)
-	//} else {
-	//	switch value.(type) {
-	//	case []uint8:
-	//		str := uint8_to_string(value.([]uint8))
-	//		col.Set(reflect.ValueOf(str))
-	//	case int8, int16, int32, int64:
-	//		vuint64 := uint64(valueV.Int())
-	//		switch colKind {
-	//		case reflect.Uint64:
-	//			col.Set(reflect.ValueOf(vuint64))
-	//		case reflect.Uint8:
-	//			col.Set(reflect.ValueOf(uint8(vuint64)))
-	//		case reflect.Uint16:
-	//			col.Set(reflect.ValueOf(uint16(vuint64)))
-	//		case reflect.Uint32:
-	//			col.Set(reflect.ValueOf(uint32(vuint64)))
-	//		}
-	//	case uint8, uint16, uint32, uint64:
-	//		vint64 := int64(valueV.Uint())
-	//		switch colKind {
-	//		case reflect.Uint64:
-	//			col.Set(reflect.ValueOf(vint64))
-	//		case reflect.Uint8:
-	//			col.Set(reflect.ValueOf(int8(vint64)))
-	//		case reflect.Uint16:
-	//			col.Set(reflect.ValueOf(int16(vint64)))
-	//		case reflect.Uint32:
-	//			col.Set(reflect.ValueOf(int32(vint64)))
-	//		}
-	//	default:
-	//		// 类型错误
-	//		panic(dbxErrorNew("type convert error: %v -> %v", valueKind, colKind))
-	//		//col.Set(reflect.ValueOf(value))
-	//	}
-	//}
 	return nil
 }
 
@@ -527,108 +607,6 @@ func uint8_to_string(bytes []uint8) string {
 	str := *(*string)(p) //cast it to a string pointer and assign the value of this pointer
 	return str
 }
-
-// 格式任意转换
-//func type_convert(kind reflect.Kind, ifc interface{}) (ifc2 interface{}) {
-//	ifcType := reflect.TypeOf(ifc)
-//	ifcKind := ifcType.Kind()
-//	if kind == ifcKind {
-//		return ifc
-//	}
-//	switch kind {
-//	case reflect.String:
-//		return fmt.Sprintf("%v", ifc)
-//	case reflect.Int:
-//		switch ifcKind {
-//		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-//
-//		}
-//	}
-//
-//	return nil
-//}
-//
-//func set_value_to_ifc(value reflect.Value, ifc interface{}) {
-//	//fmt.Printf("%v, %v\n", value.String(), value.Kind())
-//	valKind := value.Kind()
-//	ifcValue := reflect.ValueOf(ifc)
-//	ifcKind := ifcValue.Kind()
-//	if valKind == ifcKind {
-//		value.Set(ifcValue)
-//		return
-//	}
-//	switch valKind {
-//	case reflect.String:
-//
-//
-//	}
-//
-//	switch ifc.(type) {
-//	case []uint8:
-//		str := uint8_to_string(ifc.([]uint8))
-//		value.Set(reflect.ValueOf(str))
-//	case int, int8, int16, int32, int64:
-//		vuint64 := uint64(ifcValue.Int())
-//		switch valKind {
-//		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-//			value.SetInt(int64(ifcValue.Int()))
-//
-//		case reflect.Uint:
-//			value.Set(reflect.ValueOf(uint(vuint64)))
-//		case reflect.Uint64:
-//			value.Set(reflect.ValueOf(vuint64))
-//		case reflect.Uint8:
-//			value.Set(reflect.ValueOf(uint8(vuint64)))
-//		case reflect.Uint16:
-//			value.Set(reflect.ValueOf(uint16(vuint64)))
-//		case reflect.Uint32:
-//			value.Set(reflect.ValueOf(uint32(vuint64)))
-//		default:
-//			str := fmt.Sprintf("%v -> %v convert error!\n", valKind, ifcKind)
-//			panic(str)
-//		}
-//	case uint8, uint16, uint32, uint64:
-//		vint64 := int64(ifcValue.Uint())
-//		switch valKind {
-//		case reflect.Unt, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-//			value.SetUint(int64(ifcValue.Int()))
-//		case reflect.Uint:
-//			value.Set(reflect.ValueOf(int(vint64)))
-//		case reflect.Uint64:
-//			value.Set(reflect.ValueOf(vint64))
-//		case reflect.Uint8:
-//			value.Set(reflect.ValueOf(int8(vint64)))
-//		case reflect.Uint16:
-//			value.Set(reflect.ValueOf(int16(vint64)))
-//		case reflect.Uint32:
-//			value.Set(reflect.ValueOf(int32(vint64)))
-//			str := fmt.Sprintf("%v -> %v convert error!\n", valKind, ifcKind)
-//			panic(str)
-//		}
-//	default:
-//		str := fmt.Sprintf("%v -> %v convert error!\n", valKind, ifcKind)
-//		panic(str)
-//		//fmt.Printf("ifc type: %#v\n", reflect.TypeOf(ifc).Kind().String())
-//		// 类型错误
-//		//panic(dbxErrorNew("type convert error: %v -> %v", valueKind, colKind))
-//		//col.Set(reflect.ValueOf(value))
-//	}
-//}
-
-//func struct_value_to_pk_args(tableStruct *TableStruct, value reflect.Value) ([]interface{}) {
-//	args := make([]interface{}, 0)
-//	for _, pos := range tableStruct.PrimaryKeyPos {
-//		v, _ := get_reflect_value_from_pos(value, pos)
-//		vi := v.Interface()
-//		vtime, ok := vi.(time.Time)
-//		if ok {
-//			args = append(args, vtime.Format("2006-01-02 15:04:05"))
-//		} else {
-//			args = append(args, vi)
-//		}
-//	}
-//	return args
-//}
 
 // 用第一个数组减去第二个数组
 func array_sub(arr1 []string, arr2 []string) []string {

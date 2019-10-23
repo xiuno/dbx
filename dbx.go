@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/xiuno/dbx/lib/syncmap"
 	"io"
 	"io/ioutil"
 	"os"
@@ -13,7 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+	"github.com/xiuno/dbx/lib/syncmap"
+
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gocql/gocql"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -34,7 +37,10 @@ const (
 const (
 	DRIVER_MYSQL int = iota
 	DRIVER_SQLITE
+	DRIVER_CQL
 )
+
+//type UUID gocql.UUID
 
 const KEY_SEP string = "-"
 
@@ -216,7 +222,10 @@ func NewTableStruct(db *DB, tableName string, pointerType reflect.Type) (*TableS
 
 type DB struct {
 	*sql.DB
+	CQLSession *gocql.Session
+	CQLMeta    *gocql.KeyspaceMetadata
 	DriverType int
+	DbName     string
 	Stdout     io.Writer
 	Stderr     io.Writer
 
@@ -246,7 +255,7 @@ type Query struct {
 	limitEnd   int64
 
 	updateFields []string
-	updateOps []string
+	updateOps    []string
 	updateArgs   []interface{} // 存储参数
 }
 
@@ -258,34 +267,98 @@ func OpenFile(filePath string) *os.File {
 	return fp
 }
 
-func Open(driverName, dataSourceName string) (*DB, error) {
-	db, err := sql.Open(driverName, dataSourceName)
-	if err != nil {
-		return nil, err
-	}
-	var driverType int
-	if driverName == "mysql" {
-		driverType = DRIVER_MYSQL
+func NewCQLSession(hosts []string, keySpace string) (*gocql.Session, error) {
+	cluster := gocql.NewCluster(hosts...) //  "192.168.0.129:9042"
+	cluster.Keyspace = keySpace           // dbname "mycas"
+	cluster.Consistency = gocql.Consistency(1)
+	cluster.NumConns = 3	// 并发连接数，不要开太多，否则连接时间很长！
+	//cluster.ConnectTimeout = 600 * time.Second
+	//cluster.Timeout = 600 * time.Second
+	return cluster.CreateSession()
+}
+
+func Open(driverName string, dataSourceNames ... string) (*DB, error) {
+	if driverName != "cql" {
+		dataSourceName := dataSourceNames[0]
+		dbName := ""
+		if driverName == "mysql" {
+			conf, err := mysql.ParseDSN(dataSourceName)
+			if err != nil {
+				return nil, err
+			}
+			dbName = conf.DBName
+		}
+		db, err := sql.Open(driverName, dataSourceName)
+		if err != nil {
+			return nil, err
+		}
+		var driverType int
+		if driverName == "mysql" {
+			driverType = DRIVER_MYSQL
+		} else if driverName == "sqlite" || driverName == "sqlite3" {
+			driverType = DRIVER_SQLITE
+		} else {
+			driverType = DRIVER_MYSQL
+		}
+		//cacheTable := &map[string][]string{}
+		//cacheData := &map[string]*map[string]interface{}{}
+		// "root@tcp(localhost)/test?parseTime=true&charset=utf8"
+		return &DB{
+			DB:               db,
+			CQLSession:       nil,
+			DriverType:       driverType,
+			DbName:           dbName,
+			Stdout:           ioutil.Discard,
+			Stderr:           os.Stderr,
+			tableStruct:      make(map[string]*TableStruct),
+			tableData:        make(map[string]*syncmap.Map), // 第一级的 map 会在启动的时候初始化好，第二级的使用安全 map
+			tableEnableCache: false,
+		}, err
 	} else {
-		driverType = DRIVER_SQLITE
+		// 支持多个 dataSourceName
+		hosts := make([]string, 0)
+		dbName := ""
+		for _, v := range dataSourceNames {
+			conf, err := mysql.ParseDSN(v)
+			if err != nil {
+				continue
+			}
+			hosts = append(hosts, conf.Addr)
+			dbName = conf.DBName
+		}
+		cqlSession, err := NewCQLSession(hosts, dbName)
+		if err != nil {
+			return nil, err
+		}
+		meta, err := cqlSession.KeyspaceMetadata(dbName)
+		return &DB{
+			DB:               nil,
+			CQLSession:       cqlSession,
+			CQLMeta:          meta,
+			DriverType:       DRIVER_CQL,
+			DbName:           dbName,
+			Stdout:           ioutil.Discard,
+			Stderr:           os.Stderr,
+			tableStruct:      make(map[string]*TableStruct),
+			tableData:        make(map[string]*syncmap.Map), // 第一级的 map 会在启动的时候初始化好，第二级的使用安全 map
+			tableEnableCache: false,
+		}, err
 	}
-	//cacheTable := &map[string][]string{}
-	//cacheData := &map[string]*map[string]interface{}{}
-	return &DB{
-		DB:               db,
-		DriverType:       driverType,
-		Stdout:           ioutil.Discard,
-		Stderr:           os.Stderr,
-		tableStruct:      make(map[string]*TableStruct),
-		tableData:        make(map[string]*syncmap.Map), // 第一级的 map 会在启动的时候初始化好，第二级的使用安全 map
-		tableEnableCache: false,
-	}, err
 }
 
 func sql2str(sqlstr string, args ...interface{}) string {
 	sqlstr = strings.Replace(sqlstr, "?", "%v", -1)
 	sql1 := fmt.Sprintf(sqlstr, args...)
 	return sql1
+}
+
+func (db *DB) Close() (error) {
+	if db.DriverType == DRIVER_CQL {
+		db.CQLSession.Close()
+		return nil
+	} else {
+		return db.DB.Close()
+	}
 }
 
 func (db *DB) Log(s string, args ...interface{}) {
@@ -539,17 +612,23 @@ func (q *Query) WherePK(args ...interface{}) *Query {
 //	q.primaryKeyStr = str
 //}
 
-func (q *Query) whereToSQL(tableStruct *TableStruct) (where string, args []interface{}) {
+func (q *Query) whereToSQL(tableStruct *TableStruct) (where string, args []interface{}, allowFiltering string) {
 
 	// 主键优先级最高，独占
 	if len(q.primaryArgs) > 0 {
-		where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ")
+		where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.DriverType != DRIVER_CQL)
 		args = q.primaryArgs
 		return
 	}
 
 	// 合并所有的 where + whereM 条件
 	where, args = q.whereToSQLDo()
+
+	// Cassandra 非主键，需要增加关键字！
+	if q.DriverType == DRIVER_CQL && len(q.primaryArgs) == 0 && where != "" {
+		//ALLOW FILTERING
+		allowFiltering = " ALLOW FILTERING"
+	}
 	return
 }
 
@@ -559,7 +638,7 @@ func (q *Query) whereToSQLDo() (where string, args []interface{}) {
 	args = q.whereArgs
 	if len(q.whereM) > 0 {
 		colNames, args2 := q.whereM.toKeysValues()
-		whereAdd := arr_to_sql_add(colNames, "=?", " AND ")
+		whereAdd := arr_to_sql_add(colNames, "=?", " AND ", q.DriverType != DRIVER_CQL)
 		if where == "" {
 			where = whereAdd
 		} else {
@@ -573,7 +652,6 @@ func (q *Query) whereToSQLDo() (where string, args []interface{}) {
 	}
 	return
 }
-
 
 func (q *Query) Sort(colName string, order int) *Query {
 	q.orderBy = append(q.orderBy, Map{colName, order})
@@ -629,7 +707,8 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 		fields = strings.Join(q.fields, ",")
 	}
 
-	where, args = q.whereToSQL(tableStruct)
+	var allowFiltering string
+	where, args, allowFiltering = q.whereToSQL(tableStruct)
 
 	if len(q.orderBy) > 0 {
 		orderBy = " ORDER BY " + q.orderByToSQL()
@@ -644,66 +723,66 @@ func (q *Query) toSQL(tableStruct *TableStruct, action int, rvalues ...reflect.V
 	switch action {
 	case ACTION_SELECT_ONE:
 		limit = " LIMIT 1"
-		sql1 = fmt.Sprintf("SELECT %v FROM %v%v%v%v", fields, q.table, where, orderBy, limit)
+		sql1 = fmt.Sprintf("SELECT %v FROM %v%v%v%v%v", fields, q.table, where, orderBy, limit, allowFiltering)
 	case ACTION_SELECT_ALL:
-		sql1 = fmt.Sprintf("SELECT %v FROM %v%v%v%v", fields, q.table, where, orderBy, limit)
+		sql1 = fmt.Sprintf("SELECT %v FROM %v%v%v%v%v", fields, q.table, where, orderBy, limit, allowFiltering)
 	case ACTION_UPDATE:
 		if q.DriverType == DRIVER_MYSQL {
 			limit = " LIMIT 1"
 		}
 
 		var updateArgs []interface{}
-		updateArgs, pkArgs, _ := struct_value_to_args(tableStruct, rvalues[0], true, true)
+		updateArgs, pkArgs, _ := struct_value_to_args(q.DB, tableStruct, rvalues[0], true, true)
 
 		// todo: 去掉主键的更新
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, tableStruct.PrimaryKey)
-		updateFields := arr_to_sql_add(colNames, "=?", ",")
+		updateFields := arr_to_sql_add(colNames, "=?", ",", q.DriverType != DRIVER_CQL)
 		if where == "" {
-			where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ")
+			where = " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.DriverType != DRIVER_CQL)
 			args = append(args, pkArgs...)
 		}
-		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v", q.table, updateFields, where, limit)
+		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v%v", q.table, updateFields, where, limit, allowFiltering)
 		args = append(updateArgs, args...)
 	case ACTION_UPDATE_M:
 		if q.DriverType == DRIVER_SQLITE {
 			limit = ""
 		}
-		colNames := arr_to_sql_add_update(q.updateFields, q.updateOps)
-		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v", q.table, colNames, where, limit)
+		colNames := arr_to_sql_add_update(q.updateFields, q.updateOps, q.DriverType != DRIVER_CQL)
+		sql1 = fmt.Sprintf("UPDATE %v SET %v%v%v%v", q.table, colNames, where, limit, allowFiltering)
 		args = append(q.updateArgs, args...)
 	case ACTION_DELETE:
 		if q.DriverType == DRIVER_SQLITE {
 			limit = ""
 		}
-		sql1 = fmt.Sprintf("DELETE FROM %v%v%v", q.table, where, limit)
+		sql1 = fmt.Sprintf("DELETE FROM %v%v%v%v", q.table, where, limit, allowFiltering)
 	case ACTION_INSERT:
 		uncludes := []string{tableStruct.AutoIncrement}
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, uncludes)
-		fields := arr_to_sql_add(colNames, "", ",")
+		fields := arr_to_sql_add(colNames, "", ",", q.DriverType != DRIVER_CQL)
 		values := strings.TrimRight(strings.Repeat("?,", len(colNames)), ",")
 		sql1 = fmt.Sprintf("INSERT INTO %v (%v) VALUES (%v)", q.table, fields, values)
-		args, _, _ = struct_value_to_args(tableStruct, rvalues[0], true, false)
+		args, _, _ = struct_value_to_args(q.DB, tableStruct, rvalues[0], true, false)
 	case ACTION_INSERT_IGNORE:
 		// copy from ACTION_INSERT
 		uncludes := []string{tableStruct.AutoIncrement}
 		colNames := array_sub(tableStruct.ColFieldMap.colArr, uncludes)
-		fields := arr_to_sql_add(colNames, "", ",")
+		fields := arr_to_sql_add(colNames, "", ",", q.DriverType != DRIVER_CQL)
 		values := strings.TrimRight(strings.Repeat("?,", len(colNames)), ",")
 		if q.DriverType == DRIVER_MYSQL {
 			sql1 = fmt.Sprintf("INSERT IGNORE INTO %v (%v) VALUES (%v)", q.table, fields, values)
 		} else if q.DriverType == DRIVER_SQLITE {
 			sql1 = fmt.Sprintf("INSERT OR IGNORE INTO %v (%v) VALUES (%v)", q.table, fields, values)
 		}
-		args, _, _ = struct_value_to_args(tableStruct, rvalues[0], true, false)
+		args, _, _ = struct_value_to_args(q.DB, tableStruct, rvalues[0], true, false)
 		// copy end
 	case ACTION_REPLACE:
 		tableStruct := q.tableStruct[q.table]
-		fields := arr_to_sql_add(tableStruct.ColFieldMap.colArr, "", ",")
+		fields := arr_to_sql_add(tableStruct.ColFieldMap.colArr, "", ",", q.DriverType != DRIVER_CQL)
 		values := strings.TrimRight(strings.Repeat("?,", len(tableStruct.ColFieldMap.colArr)), ",")
 		sql1 = fmt.Sprintf("REPLACE INTO %v (%v) VALUES (%v)", q.table, fields, values)
-		args, _, _ = struct_value_to_args(tableStruct, rvalues[0], false, false)
+		args, _, _ = struct_value_to_args(q.DB, tableStruct, rvalues[0], false, false)
 	case ACTION_COUNT:
-		sql1 = fmt.Sprintf("SELECT COUNT(*) FROM %v%v", fields, q.table, where)
+		sql1 = fmt.Sprintf("SELECT COUNT(*) FROM %v%v%v", fields, q.table, where, allowFiltering)
 	case ACTION_SUM:
 	}
 	return
@@ -754,72 +833,166 @@ func (q *Query) One(arrIfc interface{}) (err error) {
 	// var stmt *sql.Stmt
 	// var rows *sql.Rows
 	sql1, args := q.toSQL(tableStruct, ACTION_SELECT_ONE)
-	stmt, err := q.Prepare(sql1)
+
+	var columns []string
+	if q.DriverType == DRIVER_CQL {
+		var rows *gocql.Iter
+		rows, err = q.CQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+		columns = cql_columns(rows.Columns())
+		values := make([]interface{}, len(columns))
+
+		// 数据库返回的列，需要和表结构进行对应
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return err
+		}
+		posMap := map[int][]int{}
+		for k, colName := range columns {
+			n, ok := tableStruct.ColFieldMap.colMap[colName]
+			if !ok {
+				continue
+			}
+			col := tableStruct.ColFieldMap.cols[n]
+			posMap[k] = col.FieldPos
+			values[k] = reflect.New(col.FieldStruct.Type).Interface()
+		}
+
+		if b := rows.Scan(values...); !b {
+			return sql.ErrNoRows
+		}
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return err
+		}
+		// 对应到相应的列
+		for k, _ := range columns {
+			pos, ok := posMap[k]
+			if !ok {
+				continue
+			}
+
+			ifc := reflect.ValueOf(values[k]).Elem().Interface()
+			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
+			set_value_to_ifc(col, ifc)
+		}
+		return nil
+
+	} else {
+		var rows *sql.Rows
+		rows, err = q.SQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+		columns, err = rows.Columns()
+		if err != nil {
+			return
+		}
+		// 数据库返回的列，需要和表结构进行对应
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return err
+		}
+		posMap := map[int][]int{}
+		for k, colName := range columns {
+			n, ok := tableStruct.ColFieldMap.colMap[colName]
+			if !ok {
+				continue
+			}
+			col := tableStruct.ColFieldMap.cols[n]
+			posMap[k] = col.FieldPos
+		}
+
+		values := make([]interface{}, len(columns))
+		for i := range values {
+			values[i] = new(interface{})
+		}
+
+		if !rows.Next() {
+			return sql.ErrNoRows
+		}
+		err = rows.Scan(values...)
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return err
+		}
+		// 对应到相应的列
+		for k, _ := range columns {
+			pos, ok := posMap[k]
+			if !ok {
+				continue
+			}
+
+			//ifc_pos_to_value(values[k], pos, arrValue)
+			ifc := *(values[k].(*interface{})) // db 里面取出来的数据
+			//valueV := reflect.ValueOf(value)
+			//valueKind := valueV.Kind()
+			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
+
+			set_value_to_ifc(col, ifc)
+
+		}
+
+		err = rows.Err()
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return err
+		}
+		return nil
+	}
+}
+
+func (q *Query) SQLQuery(sql1 string, args ... interface{}) (rows *sql.Rows, err error) {
+	var stmt *sql.Stmt
+	stmt, err = q.Prepare(sql1)
 	if err != nil {
 		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
+		return
 	}
 	defer stmt.Close()
-	rows, err := stmt.Query(args...)
+	rows, err = stmt.Query(args...)
 	q.LogSQL(sql1, args...)
 	if err != nil {
 		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
 	}
-	defer rows.Close()
+	return
+}
 
-	// 数据库返回的列，需要和表结构进行对应
-	columns, err := rows.Columns()
-	if err != nil {
+func (q *Query) CQLQuery(sql1 string, args ... interface{}) (rows *gocql.Iter, err error) {
+	rows = q.CQLSession.Query(sql1, args...).Iter()
+	if rows == nil {
 		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
+		return
 	}
-	posMap := map[int][]int{}
-	for k, colName := range columns {
-		n, ok := tableStruct.ColFieldMap.colMap[colName]
-		if !ok {
-			continue
+	q.LogSQL(sql1, args...)
+	//defer iter.Close()
+	return
+}
+
+func (q *Query) QueryRowScanX(sql1 string, args ... interface{}) (n int64, err error) {
+	if q.DriverType == DRIVER_CQL {
+		var rows *gocql.Iter
+		rows, err = q.CQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
 		}
-		col := tableStruct.ColFieldMap.cols[n]
-		posMap[k] = col.FieldPos
-	}
-
-	values := make([]interface{}, len(columns))
-	for i := range values {
-		values[i] = new(interface{})
-	}
-
-	if !rows.Next() {
-		return sql.ErrNoRows
-	}
-	err = rows.Scan(values...)
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
-	}
-	// 对应到相应的列
-	for k, _ := range columns {
-		pos, ok := posMap[k]
-		if !ok {
-			continue
+		rows.Scan(&n)
+		return
+	} else {
+		var n2 sql.NullInt64
+		err = q.QueryRow(sql1, args...).Scan(&n2)
+		q.LogSQL(sql1, args...)
+		if err != nil {
+			q.ErrorSQL(err.Error(), sql1, args...)
+			return
 		}
-
-		//ifc_pos_to_value(values[k], pos, arrValue)
-		ifc := *(values[k].(*interface{})) // db 里面取出来的数据
-		//valueV := reflect.ValueOf(value)
-		//valueKind := valueV.Kind()
-		col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
-
-		set_value_to_ifc(col, ifc)
-
+		n = n2.Int64
+		return
 	}
-
-	err = rows.Err()
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
-	}
-	return nil
 }
 
 func (q *Query) All(arrListIfc interface{}) (err error) {
@@ -841,31 +1014,26 @@ func (q *Query) All(arrListIfc interface{}) (err error) {
 	// 如果没有 Bind() ，这里就会执行下去，从缓存里读表结构，不用每次都反射，提高效率
 	tableStruct := q.getTableStruct(arrType)
 
-	//var stmt *sql.Stmt
-	//var rows *sql.Rows
-
 	// 判断是否为 whereM
 	sql1, args := q.toSQL(tableStruct, ACTION_SELECT_ALL)
-	stmt, err := q.Prepare(sql1)
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
+	if q.DriverType != DRIVER_CQL {
+		var rows *sql.Rows
+		rows, err = q.SQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+		err = rows_to_arr_list(arrListValue, rows, tableStruct, arrIsPtr) // 这个错误要保留
+	} else {
+		var rows *gocql.Iter
+		rows, err = q.CQLQuery(sql1, args...)
+		if err != nil || rows == nil {
+			return
+		}
+		defer rows.Close()
+		err = cql_rows_to_arr_list(&arrListValue, rows, tableStruct, arrIsPtr) // 这个错误要保留
 	}
-	defer stmt.Close()
-	rows, err := stmt.Query(args...)
-	q.LogSQL(sql1, args...)
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return err
-	}
-	defer rows.Close()
-
-
-	err = rows_to_arr_list(arrListValue, rows, tableStruct, arrIsPtr) // 这个错误要保留
-	if err != nil {
-		return err
-	}
-	return nil
+	return
 }
 
 func (q *Query) Count() (n int64, err error) {
@@ -880,62 +1048,34 @@ func (q *Query) Count() (n int64, err error) {
 	}
 	q.Fields("COUNT(*)")
 	sql1, args := q.toSQL(nil, ACTION_SELECT_ONE)
-	err = q.QueryRow(sql1, args...).Scan(&n)
-	q.LogSQL(sql1, args...)
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return
-	}
+	n, err = q.QueryRowScanX(sql1, args...)
 	return
 }
 
 // 针对某一列
 func (q *Query) Sum(colName string) (n int64, err error) {
 	defer dbxErrorDefer(&err, q)
-	var n2 sql.NullInt64
 	q.Fields("SUM(" + colName + ")")
 	sql1, args := q.toSQL(nil, ACTION_SELECT_ONE)
-	err = q.QueryRow(sql1, args...).Scan(&n2)
-	q.LogSQL(sql1, args...)
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return
-	}
-	n = n2.Int64
+	n, err = q.QueryRowScanX(sql1, args...)
 	return
 }
 
 // 针对某一列
 func (q *Query) Max(colName string) (n int64, err error) {
 	defer dbxErrorDefer(&err, q)
-	var n2 sql.NullInt64
 	q.Fields("MAX(" + colName + ")")
 	sql1, args := q.toSQL(nil, ACTION_SELECT_ONE)
-	err = q.QueryRow(sql1, args...).Scan(&n2)
-	q.LogSQL(sql1, args...)
-	if err != nil {
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return
-	}
-	n = n2.Int64
+	n, err = q.QueryRowScanX(sql1, args...)
 	return
 }
 
 // 针对某一列
 func (q *Query) Min(colName string) (n int64, err error) {
 	defer dbxErrorDefer(&err, q)
-	var n2 sql.NullInt64
 	q.Fields("MIN(" + colName + ")")
 	sql1, args := q.toSQL(nil, ACTION_SELECT_ONE)
-	err = q.QueryRow(sql1, args...).Scan(&n2)
-	q.LogSQL(sql1, args...)
-	if err != nil {
-		// Scan error on column index 0, name "MIN(blockid)": converting driver.Value type <nil> ("<nil>") to a int64
-
-		q.ErrorSQL(err.Error(), sql1, args...)
-		return
-	}
-	n = n2.Int64
+	n, err = q.QueryRowScanX(sql1, args...)
 	return
 }
 
@@ -948,10 +1088,10 @@ func (q *Query) Truncate() (err error) {
 	}
 
 	sql1 := ""
-	if q.DriverType == DRIVER_MYSQL {
-		sql1 = "TRUNCATE "+q.table
+	if q.DriverType == DRIVER_SQLITE {
+		sql1 = "DELETE FROM " + q.table
 	} else {
-		sql1 = "DELETE FROM "+q.table
+		sql1 = "TRUNCATE " + q.table
 	}
 	_, err = q.Exec(sql1)
 	if err != nil {
@@ -959,7 +1099,6 @@ func (q *Query) Truncate() (err error) {
 	}
 	return
 }
-
 
 // arrType 必须为 &struct
 func (q *Query) getTableStruct(arrTypes ...reflect.Type) (tableStruct *TableStruct) {
@@ -993,8 +1132,6 @@ func (q *Query) getTableStruct(arrTypes ...reflect.Type) (tableStruct *TableStru
 	return
 }
 
-
-
 // ifc 最好为 &struct
 func (q *Query) Insert(ifc interface{}) (insertId int64, err error) {
 	return q.insert_replace(ifc, false, false)
@@ -1002,7 +1139,18 @@ func (q *Query) Insert(ifc interface{}) (insertId int64, err error) {
 
 // ifc 最好为 &struct
 func (q *Query) Replace(ifc interface{}) (insertId int64, err error) {
-	return q.insert_replace(ifc, true, false)
+	if q.DriverType == DRIVER_CQL {
+		tableStruct := q.getTableStruct()
+		_, pkArgs, _ := struct_value_to_args(q.DB, tableStruct, reflect.ValueOf(ifc), false, false)
+		_, err = q.WherePK(pkArgs...).Delete()
+		if err != nil {
+			return
+		}
+		q.insert_replace(ifc, false, false)
+	} else {
+		q.insert_replace(ifc, true, false)
+	}
+	return
 }
 
 // ifc 最好为 &struct
@@ -1010,6 +1158,7 @@ func (q *Query) InsertIgnore(ifc interface{}) (insertId int64, err error) {
 	return q.insert_replace(ifc, false, true)
 }
 
+// 需要处理 cql uuid
 func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (insertId int64, err error) {
 	if q.readOnly {
 		return
@@ -1053,7 +1202,9 @@ func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (in
 	var args []interface{}
 	sql1, args = q.toSQL(tableStruct, action, arrValue)
 
-	if ignore {
+	// gocql.RandomUUID()
+
+	if ignore && q.DriverType != DRIVER_CQL {
 		_, err = q.DB.Exec(sql1, args...)
 		q.LogSQL(sql1, args...)
 		if err != nil {
@@ -1067,20 +1218,9 @@ func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (in
 	}
 
 	insertId, err = q.Exec(sql1, args...)
-
-	//var result sql.Result
-	//result, err = q.Exec(sql1, args...)
-	//q.LogSQL(sql1, args...)
-	//
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
-	//insertId, err = result.LastInsertId()
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
+	if err != nil {
+		return
+	}
 
 	// cache
 	if !ignore && q.tableEnableCache && tableStruct.EnableCache {
@@ -1154,8 +1294,11 @@ func (q *Query) Update(ifc interface{}) (affectedRows int64, err error) {
 	var args []interface{}
 	sql1, args = q.toSQL(tableStruct, ACTION_UPDATE, arrValue)
 
-
+	// todo: cql 不返回受到影响的行数
 	affectedRows, err = q.Exec(sql1, args...)
+	if err != nil {
+		return
+	}
 	//var result sql.Result
 	//result, err = q.Exec(sql1, args...)
 	//q.LogSQL(sql1, args...)
@@ -1214,7 +1357,7 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 		opcode := m.Key[len(m.Key)-1:]
 		if opcode == "+" || opcode == "-" || opcode == "*" || opcode == "%" || opcode == "=" {
 			updateOps[i] = opcode
-			updateFields[i] = m.Key[0:len(m.Key)-1]
+			updateFields[i] = m.Key[0 : len(m.Key)-1]
 		} else {
 			updateOps[i] = "="
 			updateFields[i] = m.Key
@@ -1229,29 +1372,36 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 
 	// 更新缓存，不用判断条数，反正都是针对小表缓存
 	if q.tableEnableCache && tableStruct.EnableCache {
-		var rows *sql.Rows
-		var stmt *sql.Stmt
+		//var rows *sql.Rows
+		//var stmt *sql.Stmt
 		// 只是选择主键
-		fields2 := arr_to_sql_add(append(pkColNames), "", ",")
-		where2, args2 := q.whereToSQL(tableStruct)
-		sql2 := fmt.Sprintf("SELECT %v FROM %v%v", fields2, q.table, where2)
-		stmt, err = q.Prepare(sql2)
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql2, args2...)
-			return
-		}
-		defer stmt.Close()
-		rows, err = stmt.Query(args2...)
-		q.LogSQL(sql2, args2...)
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql2, args2...)
-			return
-		}
-		defer rows.Close()
+		fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.DriverType != DRIVER_CQL)
+		where2, args2, allowFiltering := q.whereToSQL(tableStruct)
+		sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
 
-		ifc := reflect_make_slice_pointer(tableStruct.Type)
-		listValue := reflect.ValueOf(ifc)
-		err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
+		var listValue reflect.Value
+		if q.DriverType == DRIVER_CQL {
+			var rows *gocql.Iter
+			rows, err = q.CQLQuery(sql2, args2...)
+			if err != nil || rows == nil {
+				return
+				//goto UpdateFlag;
+			}
+			defer rows.Close()
+			ifc := reflect_make_slice_pointer(tableStruct.Type)
+			listValue = reflect.ValueOf(ifc)
+			err = cql_rows_to_arr_list(&listValue, rows, tableStruct, true) // 保留错误
+		} else {
+			var rows *sql.Rows
+			rows, err = q.SQLQuery(sql2, args2...)
+			if err != nil || rows == nil {
+				return
+			}
+			defer rows.Close()
+			ifc := reflect_make_slice_pointer(tableStruct.Type)
+			listValue = reflect.ValueOf(ifc)
+			err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
+		}
 
 		// 遍历 arrListType
 		//listValue := reflect.ValueOf(arrListIfc).Elem()
@@ -1267,7 +1417,7 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 		for k, colName := range updateFields {
 			n, ok := tableStruct.ColFieldMap.colMap[colName]
 			if !ok {
-				q.ErrorLog("UpdateM() colNmae does not exists: "+colName)
+				q.ErrorLog("UpdateM() colNmae does not exists: " + colName)
 				continue
 			}
 			col := tableStruct.ColFieldMap.cols[n]
@@ -1275,6 +1425,7 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 		}
 
 		listValue = listValue.Elem()
+		// fmt.Printf("listValue len: %v\n", listValue.Len())
 		for i := 0; i < listValue.Len(); i++ {
 			row := listValue.Index(i) // 只有主键的数据
 			pkKey := get_pk_key(tableStruct, row.Elem())
@@ -1309,45 +1460,41 @@ func (q *Query) UpdateM(m M) (affectedRows int64, err error) {
 	sql1, args = q.toSQL(tableStruct, ACTION_UPDATE_M)
 
 	affectedRows, err = q.Exec(sql1, args...)
-
-	//result, err = q.Exec(sql1, args...)
-	//q.LogSQL(sql1, args...)
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
-	//affectedRows, err = result.RowsAffected()
-	//if err != nil {
-	//	q.ErrorSQL(err.Error(), sql1, args...)
-	//	return
-	//}
-
 	return
 }
 
-func (db *DB) Exec(sql1 string, args ... interface{}) (n int64, err error) {
-	var result sql.Result
-	result, err = db.DB.Exec(sql1, args...)
-	db.LogSQL(sql1, args...)
-	if err != nil {
-		db.ErrorSQL(err.Error(), sql1, args...)
+func (db *DB) Exec(sql1 string, args ...interface{}) (n int64, err error) {
+	if db.DriverType == DRIVER_CQL {
+		err = db.CQLSession.Query(sql1, args...).Exec()
+		db.LogSQL(sql1, args...)
+		if err != nil {
+			db.ErrorSQL(err.Error(), sql1, args...)
+		}
+		return
+	} else {
+		var result sql.Result
+		result, err = db.DB.Exec(sql1, args...)
+		db.LogSQL(sql1, args...)
+		if err != nil {
+			db.ErrorSQL(err.Error(), sql1, args...)
+			return
+		}
+		prefix := strings.ToUpper(sql1[0:6])
+		if prefix == "INSERT" {
+			n, err = result.LastInsertId()
+			if err != nil {
+				db.ErrorSQL(err.Error(), sql1, args...)
+				return
+			}
+		} else if prefix == "UPDATE" || prefix == "DELETE" {
+			n, err = result.RowsAffected()
+			if err != nil {
+				db.ErrorSQL(err.Error(), sql1, args...)
+				return
+			}
+		}
 		return
 	}
-	prefix := strings.ToUpper(sql1[0:6])
-	if prefix == "INSERT" {
-		n, err = result.LastInsertId()
-		if err != nil {
-			db.ErrorSQL(err.Error(), sql1, args...)
-			return
-		}
-	} else if prefix == "UPDATE" || prefix == "DELETE" {
-		n, err = result.RowsAffected()
-		if err != nil {
-			db.ErrorSQL(err.Error(), sql1, args...)
-			return
-		}
-	}
-	return
 }
 
 func (q *Query) Delete() (n int64, err error) {
@@ -1358,11 +1505,12 @@ func (q *Query) Delete() (n int64, err error) {
 	defer dbxErrorDefer(&err, q)
 
 	var deleteAll bool
+
 	// 更新缓存
 	tableStruct := q.getTableStruct()
 	if q.tableEnableCache && tableStruct.EnableCache {
 
-		where2, args2 := q.whereToSQL(tableStruct)
+		where2, args2, allowFiltering := q.whereToSQL(tableStruct)
 
 		mp, ok := q.tableData[q.table]
 		if !ok {
@@ -1381,28 +1529,35 @@ func (q *Query) Delete() (n int64, err error) {
 			mp.Delete(q.primaryKeyStr)
 		} else {
 			// 根据条件查找，删除，类似 update
-			var rows *sql.Rows
-			var stmt *sql.Stmt
-			pkColNames := tableStruct.PrimaryKey
-			fields2 := arr_to_sql_add(append(pkColNames), "", ",")
-			sql2 := fmt.Sprintf("SELECT %v FROM %v%v", fields2, q.table, where2)
-			stmt, err = q.Prepare(sql2)
-			if err != nil {
-				q.ErrorSQL(err.Error(), sql2, args2...)
-				return
-			}
-			defer stmt.Close()
-			rows, err = stmt.Query(args2...)
-			q.LogSQL(sql2, args2...)
-			if err != nil {
-				q.ErrorSQL(err.Error(), sql2, args2...)
-				return
-			}
-			defer rows.Close()
 
-			ifc := reflect_make_slice_pointer(tableStruct.Type)
-			listValue := reflect.ValueOf(ifc)
-			err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
+			pkColNames := tableStruct.PrimaryKey
+			fields2 := arr_to_sql_add(append(pkColNames), "", ",", q.DriverType != DRIVER_CQL)
+			sql2 := fmt.Sprintf("SELECT %v FROM %v%v%v", fields2, q.table, where2, allowFiltering)
+
+			var listValue reflect.Value
+			if q.DriverType == DRIVER_CQL {
+				var rows *gocql.Iter
+				rows, err = q.CQLQuery(sql2, args2...)
+				if err != nil || rows == nil {
+					return
+				}
+				defer rows.Close()
+
+				ifc := reflect_make_slice_pointer(tableStruct.Type)
+				listValue = reflect.ValueOf(ifc)
+				err = cql_rows_to_arr_list(&listValue, rows, tableStruct, true) // 保留错误
+			} else {
+				var rows *sql.Rows
+				rows, err = q.SQLQuery(sql2, args2...)
+				if err != nil || rows == nil {
+					return
+				}
+				defer rows.Close()
+
+				ifc := reflect_make_slice_pointer(tableStruct.Type)
+				listValue = reflect.ValueOf(ifc)
+				err = rows_to_arr_list(listValue, rows, tableStruct, true) // 保留错误
+			}
 
 			// 遍历 arrListType
 			//listValue := reflect.ValueOf(arrListIfc).Elem()
@@ -1414,7 +1569,6 @@ func (q *Query) Delete() (n int64, err error) {
 			}
 			//q.tableData[q.table] = mp
 		}
-
 	}
 
 	var sql1 string
@@ -1422,8 +1576,6 @@ func (q *Query) Delete() (n int64, err error) {
 	sql1, args = q.toSQL(tableStruct, ACTION_DELETE)
 
 	n, err = q.Exec(sql1, args...)
-
-
 
 	if deleteAll {
 		q.LoadCache()
