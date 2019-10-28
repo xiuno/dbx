@@ -1636,12 +1636,12 @@ func (q *Query) get_row_by_sql(arrValue reflect.Value, tableStruct *TableStruct,
 	return
 }
 
-func (q *Query) get_row_by_pk(tableStruct *TableStruct, args... interface{}) (arrValue reflect.Value, err error) {
-	where := " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
-	sql1 := fmt.Sprintf("SELECT * FROM %v WHERE %v", q.table, where)
-	err = q.get_row_by_sql(arrValue, tableStruct, sql1, args...)
-	return
-}
+//func (q *Query) get_row_by_pk(arrValue reflect.Value, tableStruct *TableStruct, args... interface{}) (err error) {
+//	where := " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
+//	sql1 := fmt.Sprintf("SELECT * FROM %v WHERE %v", q.table, where)
+//	err = q.get_row_by_sql(arrValue, tableStruct, sql1, args...)
+//	return
+//}
 
 func (db *DB) DebugCache() {
 	for tableName, mp := range db.tableData {
