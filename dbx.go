@@ -645,7 +645,10 @@ func (q *Query) SortM(m M) *Query {
 
 /*
 	Limit(10)
-	Limit(0, 10)
+	Limit(0, 10) // Cassandra 不支持
+	// Cassandra 只能"下一页"的方式进行翻页，默认按照主键排序
+	SELECT * FROM user WHERE token(uid)>token(300) LIMIT 1;
+	SELECT * FROM user WHERE token(id) > token(xx-xx-xx-xx-xx) AND regdate >= '2019-01-01' LIMIT 10  ALLOW FILTERING;
 */
 func (q *Query) Limit(limitStart int64, limitEnds ...int64) *Query {
 	limitEnd := int64(0)
@@ -903,6 +906,7 @@ func (q *Query) All(arrListIfc interface{}) (err error) {
 	return
 }
 
+// Cassandra Count() 可能会超时，可以通过 COPY tablename TO '/dev/null' 来查看行数
 func (q *Query) Count() (n int64, err error) {
 	defer dbxErrorDefer(&err, q)
 
@@ -1527,15 +1531,12 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 		if err != nil || rows == nil {
 			return
 		}
+
+		// 数据库返回的列，需要和表结构进行对应
 		defer rows.Close()
 		columns = cql_columns(rows.Columns())
 		values := make([]interface{}, len(columns))
 
-		// 数据库返回的列，需要和表结构进行对应
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
-			return
-		}
 		posMap := map[int][]int{}
 		for k, colName := range columns {
 			n, ok := tableStruct.ColFieldMap.colMap[colName]
@@ -1549,10 +1550,6 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 
 		if b := rows.Scan(values...); !b {
 			err = sql.ErrNoRows
-			return
-		}
-		if err != nil {
-			q.ErrorSQL(err.Error(), sql1, args...)
 			return
 		}
 		// 对应到相应的列
@@ -1576,10 +1573,6 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 		}
 		defer rows.Close()
 		columns, err = rows.Columns()
-		if err != nil {
-			return
-		}
-		// 数据库返回的列，需要和表结构进行对应
 		if err != nil {
 			q.ErrorSQL(err.Error(), sql1, args...)
 			return
