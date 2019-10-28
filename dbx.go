@@ -1558,9 +1558,9 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 			if !ok {
 				continue
 			}
-
-			ifc := reflect.ValueOf(values[k]).Elem().Interface()
-			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
+			arrValue = reflect.ValueOf(values[k]).Elem()
+			ifc := arrValue.Interface()
+			col := get_reflect_value_from_pos(arrValue, pos) // 需要设置的字段
 			set_value_to_ifc(col, ifc)
 		}
 		return
@@ -1573,10 +1573,12 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 		}
 		defer rows.Close()
 		columns, err = rows.Columns()
+		values := make([]interface{}, len(columns))
 		if err != nil {
 			q.ErrorSQL(err.Error(), sql1, args...)
 			return
 		}
+
 		posMap := map[int][]int{}
 		for k, colName := range columns {
 			n, ok := tableStruct.ColFieldMap.colMap[colName]
@@ -1585,12 +1587,13 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 			}
 			col := tableStruct.ColFieldMap.cols[n]
 			posMap[k] = col.FieldPos
+			values[k] = reflect.New(col.FieldStruct.Type).Interface()
 		}
 
-		values := make([]interface{}, len(columns))
-		for i := range values {
-			values[i] = new(interface{})
-		}
+		//values := make([]interface{}, len(columns))
+		//for i := range values {
+		//	values[i] = new(interface{})
+		//}
 
 		if !rows.Next() {
 			err = sql.ErrNoRows
@@ -1608,13 +1611,18 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 				continue
 			}
 
-			//ifc_pos_to_value(values[k], pos, arrValue)
-			ifc := *(values[k].(*interface{})) // db 里面取出来的数据
-			//valueV := reflect.ValueOf(value)
-			//valueKind := valueV.Kind()
-			col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
-
+			arrValue = reflect.ValueOf(values[k]).Elem()
+			ifc := arrValue.Interface()
+			col := get_reflect_value_from_pos(arrValue, pos) // 需要设置的字段
 			set_value_to_ifc(col, ifc)
+
+			////ifc_pos_to_value(values[k], pos, arrValue)
+			//ifc := *(values[k].(*interface{})) // db 里面取出来的数据
+			////valueV := reflect.ValueOf(value)
+			////valueKind := valueV.Kind()
+			//col := get_reflect_value_from_pos(arrValue.Elem(), pos) // 需要设置的字段
+			//
+			//set_value_to_ifc(col, ifc)
 
 		}
 
