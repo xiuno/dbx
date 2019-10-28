@@ -812,7 +812,7 @@ func (q *Query) One(arrIfc interface{}) (err error) {
 	}
 
 	sql1, args := q.toSQL(tableStruct, ACTION_SELECT_ONE)
-	arrValue, err = q.get_row_by_sql(tableStruct, sql1, args...)
+	err = q.get_row_by_sql(arrValue, tableStruct, sql1, args...)
 	return
 }
 
@@ -1523,7 +1523,7 @@ func (q *Query) get_list_by_sql(sql2 string, args2... interface{}) (listValue re
 }
 
 // 获取一行
-func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... interface{}) (arrValue reflect.Value, err error) {
+func (q *Query) get_row_by_sql(arrValue reflect.Value, tableStruct *TableStruct, sql1 string, args... interface{}) (err error) {
 	var columns []string
 	if q.DriverType == DRIVER_CQL {
 		var rows *gocql.Iter
@@ -1536,6 +1536,7 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 		defer rows.Close()
 		columns = cql_columns(rows.Columns())
 		values := make([]interface{}, len(columns))
+		//refVals := make([]reflect.Value, len(columns))
 
 		posMap := map[int][]int{}
 		for k, colName := range columns {
@@ -1545,6 +1546,7 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 			}
 			col := tableStruct.ColFieldMap.cols[n]
 			posMap[k] = col.FieldPos
+			//refVals[k] = reflect.New(col.FieldStruct.Type).Elem()
 			values[k] = reflect.New(col.FieldStruct.Type).Interface()
 		}
 
@@ -1558,10 +1560,9 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 			if !ok {
 				continue
 			}
-			arrValue = reflect.ValueOf(values[k]).Elem()
-			ifc := arrValue.Interface()
-			col := get_reflect_value_from_pos(arrValue, pos) // 需要设置的字段
-			set_value_to_ifc(col, ifc)
+			posValue := get_reflect_value_from_pos(arrValue, pos) // 需要设置的字段
+			//set_value_to_ifc(posValue, values[k])
+			set_value_to_ifc(posValue, reflect.ValueOf(values[k]).Elem().Interface())
 		}
 		return
 
@@ -1574,6 +1575,7 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 		defer rows.Close()
 		columns, err = rows.Columns()
 		values := make([]interface{}, len(columns))
+		//refVals := make([]reflect.Value, len(columns))
 		if err != nil {
 			q.ErrorSQL(err.Error(), sql1, args...)
 			return
@@ -1611,10 +1613,9 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 				continue
 			}
 
-			arrValue = reflect.ValueOf(values[k]).Elem()
-			ifc := arrValue.Interface()
-			col := get_reflect_value_from_pos(arrValue, pos) // 需要设置的字段
-			set_value_to_ifc(col, ifc)
+			posValue := get_reflect_value_from_pos(arrValue, pos) // 需要设置的字段
+			// set_value_to_ifc(posValue, values[k])
+			set_value_to_ifc(posValue, reflect.ValueOf(values[k]).Elem().Interface())
 
 			////ifc_pos_to_value(values[k], pos, arrValue)
 			//ifc := *(values[k].(*interface{})) // db 里面取出来的数据
@@ -1638,7 +1639,7 @@ func (q *Query) get_row_by_sql(tableStruct *TableStruct, sql1 string, args... in
 func (q *Query) get_row_by_pk(tableStruct *TableStruct, args... interface{}) (arrValue reflect.Value, err error) {
 	where := " WHERE " + arr_to_sql_add(tableStruct.PrimaryKey, "=?", " AND ", q.isCQL)
 	sql1 := fmt.Sprintf("SELECT * FROM %v WHERE %v", q.table, where)
-	arrValue, err = q.get_row_by_sql(tableStruct, sql1, args...)
+	err = q.get_row_by_sql(arrValue, tableStruct, sql1, args...)
 	return
 }
 
