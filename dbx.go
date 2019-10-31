@@ -274,8 +274,8 @@ func NewCQLSession(hosts []string, keySpace string) (*gocql.Session, error) {
 	cluster.Keyspace = keySpace           // dbname "mycas"
 	cluster.Consistency = gocql.Consistency(1)
 	cluster.NumConns = 3	// 并发连接数，不要开太多，否则连接时间很长！
-	//cluster.ConnectTimeout = 600 * time.Second
-	//cluster.Timeout = 600 * time.Second
+	cluster.ConnectTimeout = 600 * time.Second
+	cluster.Timeout = 600 * time.Second
 	return cluster.CreateSession()
 }
 
