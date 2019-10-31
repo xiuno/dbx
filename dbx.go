@@ -272,7 +272,7 @@ func OpenFile(filePath string) *os.File {
 func NewCQLSession(hosts []string, keySpace string) (*gocql.Session, error) {
 	cluster := gocql.NewCluster(hosts...) //  "192.168.0.129:9042"
 	cluster.Keyspace = keySpace           // dbname "mycas"
-	//cluster.Consistency = gocql.Consistency(0)	// https://teddymaef.github.io/learncassandra/cn/replication/turnable_consistency.html
+	cluster.Consistency = gocql.One	// https://teddymaef.github.io/learncassandra/cn/replication/turnable_consistency.html
 	//cluster.Consistency = gocql.Quorum	// https://teddymaef.github.io/learncassandra/cn/replication/turnable_consistency.html
 	cluster.NumConns = 4	// 每个主机的并发连接数，不要开太多，否则连接时间很长！
 	cluster.ConnectTimeout = 600 * time.Second
@@ -1013,17 +1013,19 @@ func (q *Query) Insert(ifc interface{}) (insertId int64, err error) {
 
 // ifc 最好为 &struct
 func (q *Query) Replace(ifc interface{}) (insertId int64, err error) {
-	if q.DriverType == DRIVER_CQL {
-		tableStruct := q.getTableStruct()
-		_, pkArgs, _ := struct_value_to_args(tableStruct, reflect.ValueOf(ifc), false, false, q.isCQL)
-		_, err = q.WherePK(pkArgs...).Delete()
-		if err != nil {
-			return
-		}
-		q.insert_replace(ifc, false, false)
-	} else {
-		q.insert_replace(ifc, true, false)
-	}
+	q.insert_replace(ifc, true, false)
+	//
+	//if q.DriverType == DRIVER_CQL {
+	//	tableStruct := q.getTableStruct()
+	//	_, pkArgs, _ := struct_value_to_args(tableStruct, reflect.ValueOf(ifc), false, false, q.isCQL)
+	//	_, err = q.WherePK(pkArgs...).Delete()
+	//	if err != nil {
+	//		return
+	//	}
+	//	q.insert_replace(ifc, true, false)
+	//} else {
+	//	q.insert_replace(ifc, true, false)
+	//}
 	return
 }
 
@@ -1089,6 +1091,9 @@ func (q *Query) insert_replace(ifc interface{}, isReplace bool, ignore bool) (in
 			}
 		}
 		return
+	}
+	if q.isCQL && action == ACTION_INSERT {
+		sql1 += " IF NOT EXISTS"
 	}
 
 	insertId, err = q.Exec(sql1, args...)
