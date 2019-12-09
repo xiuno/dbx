@@ -273,7 +273,7 @@ func NewCQLSession(hosts []string, keySpace string) (*gocql.Session, error) {
 	cluster := gocql.NewCluster(hosts...) //  "192.168.0.129:9042"
 	cluster.Keyspace = keySpace           // dbname "mycas"
 	cluster.Consistency = gocql.One	// https://teddymaef.github.io/learncassandra/cn/replication/turnable_consistency.html
-	//cluster.Consistency = gocql.Quorum	// https://teddymaef.github.io/learncassandra/cn/replication/turnable_consistency.html
+	//cluster.Consistency = gocql.Quorum // default, 没有 gocql.One 快
 	cluster.NumConns = 4	// 每个主机的并发连接数，不要开太多，否则连接时间很长！
 	cluster.ConnectTimeout = 600 * time.Second
 	cluster.Timeout = 600 * time.Second

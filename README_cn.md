@@ -1,9 +1,9 @@
-# dbx:  一个支持 KV 缓存全表数据的高性能 golang db 库
+# dbx:  一个支持 MySQL/SQLite/Cassandra/ScyllaDB + KV 缓存全表数据的高性能 Golang DB 库
 
 什么是 dbx ? 简而言之就是：
 > **dbx = DB + Cache**
 
-它是一个支持对全表数据进行透明缓存的 Golang DB 库，在内存足够大的情况下，不再需要 Memcached, Redis 等缓存服务。
+它是一个支持对 MySQL/SQLite/Cassandra/ScyllaDB 全表数据进行透明缓存的 Golang DB 库，在内存足够大的情况下，不再需要 Memcached, Redis 等缓存服务。
 而且读取缓存的速度相当之快，本机测试 qps 达到:  350万+/秒，可以有效的简化应用端业务逻辑代码。
 它支持 MySQL/Sqlite3，支持结构体自由组合嵌套。
 它的实现原理为自动扫描表结构，确定主键和自增列，并且通过主键按照行来缓存数据，按照行透明管理 cache，上层只需要按照普通的 ORM 风格 API 操作即可。
@@ -89,7 +89,15 @@ fmt.Printf("uid: %v\n", uid)
 db.Table("user").LoadCache() // 自定义需要手动刷新缓存
 ```
 
-# 用例
+# Cassandra/Scylladb 用例
+```
+db, err = dbx.Open("cql", "root@tcp(192.168.0.129:9042)/btc")
+dbx.Check(err)
+defer db.Close()
+具体用法参考: example/test_cql/main.go
+```
+
+# MySQL/SQLite 用例
 ```golang
 package main
 
