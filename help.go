@@ -744,7 +744,7 @@ func set_value_to_ifc_int(v1 reflect.Value, opcode string, i2 interface{}) {
 
 }
 
-func get_key_str_by_args(args ... interface{}) string {
+func get_key_str_by_args(args ...interface{}) string {
 	str := ""
 	for _, v := range args {
 		str += fmt.Sprintf("%v", v) + KEY_SEP
@@ -752,6 +752,96 @@ func get_key_str_by_args(args ... interface{}) string {
 	str = strings.TrimRight(str, KEY_SEP)
 	return str
 }
+
+// 查找字符 c 出现在 str 中第 n 次出现的位置（偏移量）
+func str_index_n(str string, c byte, n int) int {
+	l := len(str)
+	if n <= 0 || n >= l {
+		return -1
+	}
+	m := 0
+	for i := 0; i < l; i++ {
+		if str[i] == c {
+			m++
+			if m >= n {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// 将字符重复 n 次，用分隔符隔开
+func str_repeat_n(c byte, sep byte, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	arr := make([]byte, n*2-1)
+	for i := 0; i < n; i++ {
+		arr[i*2] = c
+		if i < n-1 {
+			arr[i*2+1] = sep
+		}
+	}
+	return string(arr)
+}
+
+// 将 pos 位置
+func str_replace_n(str string, pos int, dest string) string {
+	if pos <= 0 || pos > len(str) {
+		return str
+	}
+	return str[0:pos] + dest + str[pos+1:]
+}
+
+// 用重复的字符串（最后三个参数定义）替换指定位置的字符（有前三个参数指定）
+func str_replace_char_with_repeat_char(str string, c byte, n int, c2 byte, sep2 byte, n2 int) string {
+	str2 := str_repeat_n(c2, sep2, n2)
+	pos := str_index_n(str, c, n)
+	str3 := str_replace_n(str, pos, str2)
+	return str3
+}
+
+// 对 where 进行预处理
+func where_prepare(str string, args ...interface{}) (dstr string, dargs []interface{}) {
+	l := len(args)
+	dargs = make([]interface{}, 0)
+	dstr = str
+	for i := l - 1; i >= 0; i-- {
+		// 判断 v 的类型是否为数组
+		t := reflect.TypeOf(args[i]).Kind()
+		if t == reflect.Slice || t == reflect.Array {
+
+			elem := reflect.ValueOf(args[i])
+			var l2 int
+			if t == reflect.Array {
+				l2 = elem.Type().Len()
+			} else if t == reflect.Slice {
+				l2 = elem.Len()
+			}
+
+			// 将第 k 个 ? 替换为 n 个 ?
+			dstr = str_replace_char_with_repeat_char(dstr, '?', i+1, '?', ',', l2)
+
+			// 遍历里面的元素
+			for j := l2 - 1; j >= 0; j-- {
+				dargs = append(dargs, elem.Index(j).Interface())
+			}
+		} else {
+			dargs = append(dargs, args[i])
+		}
+	}
+
+	// 反转数组
+	size := reflect.ValueOf(dargs).Len()
+	swap := reflect.Swapper(dargs)
+	for i, j := 0, size-1; i < j; i, j = i+1, j-1 {
+		swap(i, j)
+	}
+
+	return dstr, dargs
+}
+
 //func uint8_to_string(bs []uint8) string {
 //	ba := []byte{}
 //	for _, b := range bs {

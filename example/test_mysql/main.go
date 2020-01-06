@@ -22,7 +22,7 @@ func main() {
 	var db *dbx.DB
 
 	// db, err = dbx.Open("mysql", "root:root@tcp(localhost)/test?parseTime=true&charset=utf8")
-	db, err = dbx.Open("mysql", "root@tcp(localhost)/test?parseTime=true&charset=utf8")
+	db, err = dbx.Open("mysql", "root:root@tcp(localhost)/test?parseTime=true&charset=utf8")
 	dbx.Check(err)
 	defer db.Close()
 
@@ -107,6 +107,12 @@ func main() {
 
 	// 获取多条
 	userList := []*User{}
+
+	// in 语法
+	err = db.Table("user").Where("gid IN(?)", []int64{1,2,3}).All(&userList)
+	if err != nil && err != sql.ErrNoRows {
+		panic(err)
+	}
 
 	// 获取多条无结果
 	err = db.Table("user").Where("uid>?", 1000).All(&userList)
