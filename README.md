@@ -1,4 +1,4 @@
-# dbx: A high performance database library for golang supporting KV caching full table data. 
+# dbx: A database library for MySQL/SQLite/Cassandra/Scylladb by golang.
 
 What is dbx? 
 
@@ -98,7 +98,15 @@ fmt.Printf("uid: %v\n", uid)
 db.Table("user").LoadCache() // Customization requires manual refresh of the cache
 ```
 
-# Use cases
+# Cassandra/Scylladb Use case
+```
+db, err = dbx.Open("cql", "root@tcp(192.168.0.129:9042)/btc")
+dbx.Check(err)
+defer db.Close()
+more: example/test_cql/main.go
+```
+
+# MySQL/SQLite Use case
 ```golang
 package main
 
