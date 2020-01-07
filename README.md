@@ -64,8 +64,11 @@ db.Table("user").Update(u2)
 // delete one by primary key
 db.Table("user").WherePK(1).Delete()
 
-// find multi
+// find multi rows
 db.Table("user").Where("uid>?", 1).All(&userList)
+
+// find multi rows by IN()
+db.Table("user").Where("uid IN(?)", []int{1, 2, 3}).All(&userList)
 
 ```
 

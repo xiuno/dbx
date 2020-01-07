@@ -58,6 +58,9 @@ db.Table("user").WherePK(1).Delete()
 // 获取多条
 db.Table("user").Where("uid>?", 1).All(&userList)
 
+// IN() 获取多条
+db.Table("user").Where("uid IN(?)", []int{1, 2, 3}).All(&userList)
+
 ```
 
 # 日志输出到指定的流
