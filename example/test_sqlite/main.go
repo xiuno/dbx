@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"github.com/xiuno/dbx"
 	"os"
 	"time"
+
+	"github.com/xiuno/dbx"
 )
 
 type Human struct {
@@ -41,6 +42,10 @@ func main() {
 
 	//db.Exec("PRAGMA journal_mode=WAL;")
 	//db.Exec("PRAGMA wal_autocheckpoint=100;")
+
+	// 开启缓存，可选项，一般只针对小表开启缓存，超过 10w 行，不建议开启！
+	db.Bind("user", &User{}, true)
+	db.EnableCache(false)
 
 	// 创建表
 	_, err = db.Exec(`
@@ -110,6 +115,13 @@ func main() {
 
 	// 获取多条
 	userList := []*User{}
+
+	// in 语法
+	//err = db.Table("user").Where("uid IN(?)", []int64{1,2,3}).All(&userList)
+	//if err != nil && err != sql.ErrNoRows {
+	//	panic(err)
+	//}
+
 	err = db.Table("user").Where("uid>?", 1).All(&userList)
 	if err != nil {
 		panic(err)

@@ -1,0 +1,65 @@
+package main
+
+import (
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/gocql/gocql"
+)
+
+
+// create table foo (
+// bar bigint,
+// baz ascii,
+// primary key (bar)
+// );
+
+func main() {
+	sessions := [10]*gocql.Session{}
+	for k := 0; k < 10; k++ {
+		cluster := gocql.NewCluster("127.0.0.1:9042")
+		cluster.Keyspace = "btc"
+		session, _ := cluster.CreateSession()
+		sessions[k] = session
+	}
+	sessions[0].Query("TRUNCATE user;")
+
+	t1 := time.Now()
+	wg := sync.WaitGroup{}
+	wg.Add(10)
+	for k := 0; k < 10; k++ {
+		go func(k int) {
+			session := sessions[k]
+			defer session.Close()
+			for i := k * 10000; i < k * 10000 + 1001; i++ {
+				session.Query("INSERT INTO user (uid,gid) VALUES (?,?)", i, i).Exec()
+			}
+			wg.Done()
+		}(k)
+	}
+	wg.Wait()
+
+	//batch := session.NewBatch(gocql.UnloggedBatch)
+	//for i := 0; i < 100; i++ {
+	//	batch.Query("INSERT INTO user (uid,gid) VALUES (?,?)", i, i)
+	//}
+	//err = session.ExecuteBatch(batch)
+	//if err != nil {
+	//	panic(err)
+	//}
+	t2 := time.Now().Sub(t1)
+	fmt.Printf("time: %v\n", t2.String())
+}
+//
+////批量执行数据
+//func TestScylla_Batch(t *testing.T) {
+//	query := fmt.Sprintf(`BEGIN BATCH
+//            UPDATE user SET user_name = 'asdqw' where id = %d;
+//            INSERT INTO user (id,user_name) VALUES (2,'zhangsan');
+//            APPLY BATCH;`, 1)
+//	err := session.Query(query).Exec()
+//	if err != nil {
+//		fmt.Println(err)
+//	}
+//}

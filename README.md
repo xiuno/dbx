@@ -247,7 +247,10 @@ func main() {
 	err = db.QueryRow("SELECT uid FROM user WHERE uid=?", 2).Scan(&uid)
 	dbx.Check(err)
 	fmt.Printf("uid: %v\n", uid)
-	db.Table("user").LoadCache() // Customization requires manual refresh of the cache
+	
+	
+	
+	// db.Table("user").LoadCache() // Customization requires manual refresh of the cache
 
 	// Customize complex SQL to get multiple (native)
 	var name string

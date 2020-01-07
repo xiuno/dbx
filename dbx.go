@@ -533,16 +533,58 @@ func (q *Query) Fields(fields ...string) *Query {
 //	return t.Format("2006-01-02 15:04:05")
 //}
 
+
+// 查找字符 c 出现在 str 中第 n 次出现的位置（偏移量）
+func IndexN(str string, c byte, n int) int {
+	l := len(str)
+	if n <= 0 || n >= l {
+		return -1
+	}
+	m := 0
+	for i := 0; i < l; i++ {
+		if str[i] == c {
+			m++
+			if m >= n {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// 将 pos 位置
+func replaceN(str string, pos int, dest string) string {
+	if pos <= 0 || pos > len(str) {
+		return str
+	}
+	return str[0:pos] + dest + str[pos+1:]
+}
+
+// db.Table("table1").Where("id IN (?)", ids).One(&row)
 func (q *Query) Where(str string, args ...interface{}) *Query {
 	//args_time_format(args)
+	//str1, args1 := where_prepare(str, args...) // 支持数组参数，自动展开，方便 id IN(?) 语法
+	str1, args1 := str, args
 	if q.where == "" {
-		q.where = str
+		q.where = str1
 	} else {
-		q.where += " AND " + str
+		q.where += " AND " + str1
 	}
-	q.whereArgs = append(q.whereArgs, args...)
+	q.whereArgs = append(q.whereArgs, args1...)
 	return q
 }
+
+// db.Table("table1").Where("id IN (?)", dbx.In(ids)).One(&row)
+//func (q *Query) Where(str string, args ...interface{}) *Query {
+//	//args_time_format(args)
+//	if q.where == "" {
+//		q.where = str
+//	} else {
+//		q.where += " AND " + str
+//	}
+//	q.whereArgs = append(q.whereArgs, args...)
+//	return q
+//}
 
 func (q *Query) And(str string, args ...interface{}) *Query {
 	return q.Where(str, args...)
@@ -1442,12 +1484,16 @@ func (q *Query) Delete() (n int64, err error) {
 		3. where 为复杂条件
 	 */
 	where2, args2, allowFiltering := q.whereToSQL(tableStruct)
-	mp, ok := q.tableData[q.table]
-	if !ok {
-		errStr := fmt.Sprintf("q.tableData[q.table]: key %v does not exists.", q.table)
-		q.ErrorLog(errStr)
-		err = errors.New(errStr)
-		return
+	var mp *syncmap.Map
+	var ok bool
+	if cacheOn {
+		mp, ok = q.tableData[q.table]
+		if !ok {
+			errStr := fmt.Sprintf("q.tableData[q.table]: key %v does not exists.", q.table)
+			q.ErrorLog(errStr)
+			err = errors.New(errStr)
+			return
+		}
 	}
 	if where2 == "" {
 		q.Truncate()
