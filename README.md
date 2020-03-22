@@ -13,17 +13,6 @@ It supports MySQL/Sqlite3 and free nesting of structures.
 Its implementation principle is to automatically scan the table structure, determine the primary key and self-adding column, and cache data according to the row by the primary key, manage the cache transparently according to the row, the upper layer only needs to operate according to the ordinary ORM style API.
 
 
-
-# Supporting caching, high performance read KV cached full table data
-After a simple test (with small data), Sqlite3 can be queried directly at a speed of 3w+/s, and 350 w+/s after opening the cache is much faster than Redis (because it has no network IO).
-It then supports caching (generally for small tables, ensuring that memory can be opened when it can be put down)
-```golang
-db.Bind("user", &User{}, true)
-db.Bind("group", &Group{}, true)
-db.EnableCache(true)
-```
-
-
 # Support nesting, avoid inefficient reflection
 Golang is a static language. Reflections are often used to implement more complex functions, but they slow down severely when they are not used properly. Practice has found that we should try our best to use digital index instead of string index, such as Field () performance is about 50 times that of FieldByName ().
 Most DB libraries do not support nesting because reflection is slow and complex, especially when there are too many nested layers. Fortunately, through hard work, DBX effectively implements the nesting support of unlimited layers, and the performance is good.
@@ -252,6 +241,16 @@ func main() {
 	return
 }
 
+```
+
+
+# Supporting caching, high performance read KV cached full table data
+After a simple test (with small data), Sqlite3 can be queried directly at a speed of 3w+/s, and 350 w+/s after opening the cache is much faster than Redis (because it has no network IO).
+It then supports caching (generally for small tables, ensuring that memory can be opened when it can be put down)
+```golang
+db.Bind("user", &User{}, true)
+db.Bind("group", &Group{}, true)
+db.EnableCache(true)
 ```
 
 
